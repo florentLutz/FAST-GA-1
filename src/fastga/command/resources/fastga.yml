@@ -36,7 +36,7 @@ model:
     mtow:
         id: fastga.loop.mtow
     performance:
-        id: fastga.performances.sizing
+        id: fastga.performances.mission
         propulsion_id: fastga.wrapper.propulsion.basicIC_engine
     hq:
         tail_sizing:

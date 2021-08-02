@@ -19,7 +19,9 @@ import numpy as np
 import pandas as pd
 from typing import Union, Sequence, Tuple, Optional
 from scipy.interpolate import interp2d
+from scipy.optimize import *
 import os.path as pth
+import os
 
 from fastoad.model_base import FlightPoint, Atmosphere
 from fastoad.constants import EngineSetting
@@ -53,24 +55,26 @@ NACELLE_LABELS = {
 }
 
 
-class BasicICEngine(AbstractFuelPropulsion):
+class BasicTPEngine(AbstractFuelPropulsion):
     def __init__(
-        self,
-        max_power: float,
-        design_altitude: float,
-        design_speed: float,
-        fuel_type: float,
-        strokes_nb: float,
-        prop_layout: float,
-        speed_SL,
-        thrust_SL,
-        thrust_limit_SL,
-        efficiency_SL,
-        speed_CL,
-        thrust_CL,
-        thrust_limit_CL,
-        efficiency_CL,
+            self,
+            power_design: float,
+            t41t_design: float,
+            opr_design: float,
+            design_altitude: float,
+            design_Mach: float,
+            prop_layout: float,
+            bleed_control_design: str,
+            speed_SL,
+            thrust_SL,
+            thrust_limit_SL,
+            efficiency_SL,
+            speed_CL,
+            thrust_CL,
+            thrust_limit_CL,
+            efficiency_CL,
     ):
+
         """
         Parametric Internal Combustion engine.
 
@@ -84,31 +88,43 @@ class BasicICEngine(AbstractFuelPropulsion):
         :param strokes_nb: can be either 2-strokes (=2.0) or 4-strokes (=4.0)
         :param prop_layout: propulsion position in nose (=3.0) or wing (=1.0)
         """
-        if fuel_type == 1.0:
-            self.ref = {
-                "max_power": 132480,
-                "length": 0.83,
-                "height": 0.57,
-                "width": 0.85,
-                "mass": 136,
-            }  # Lycoming IO-360-B1A
-            self.map_file_path = pth.join(resources.__path__[0], "FourCylindersAtmospheric.csv")
-        else:
-            self.ref = {
-                "max_power": 160000,
-                "length": 0.859,
-                "height": 0.659,
-                "width": 0.650,
-                "mass": 205,
-            }  # TDA CR 1.9 16V
-            # FIXME: change the map file for those engines
-            self.map_file_path = pth.join(resources.__path__[0], "FourCylindersAtmospheric.csv")
+
+        # Definition of the Turboprop design parameters
+        self.eta_225 = 0.85  # First compressor stage polytropic efficiency
+        self.eta_253 = 0.86  # Second compressor stage polytropic efficiency
+        self.eta445 = 0.86  # High preassure turbine  polytropic efficiency
+        self.eta455 = 0.86  # Power turbine  polytropic efficiency
+        self.etaqL = 43.260e6 * 0.95  # Combustion efficiency [J/kg]
+        self.eta_axe = 0.98  # HP axe mechanical efficiency
+        self.pi02 = 0.8  # Inlet preassure loss
+        self.picc = 0.95  # Combustion chamber preassure loss
+        self.c = 0.05  # Percentage of the total aspirated airflow used for turbine cooling
+        self.P_out = 50 * 736  # Power used for electrical generation obtained from the HP shaft (in Watts)
+        self.eta_Power_train = 0.98  # Power shaft mechanical efficiency
+        self.inter_compressor_bleed = 0.04  # Percentage of the total inlet compressor airflow extracted after the first
+        # compression stage (in station 25)
+        self.exhaustMach_design = 0.4  # Mach of the exhaust gasses in the design point
+        self.opr1_design = 0.25 * opr_design  # Compression ratio of the first stage in the design point
+        self.bleed_control_design = bleed_control_design
+
+        # Definition of the Turboprop design parameters
+        self.max_power = power_design
+        self.t41t_d = t41t_design
+        self.opr_d = opr_design
+
+
+        # Original atributes from the ICE class, modified where convenient
+        self.ref = {
+            "max_power": 160000,
+            "length": 0.0,
+            "height": 0.0,
+            "width": 0.0,
+            "mass": 0.0,
+        }
         self.prop_layout = prop_layout
-        self.max_power = max_power
         self.design_altitude = design_altitude
-        self.design_speed = design_speed
-        self.fuel_type = fuel_type
-        self.strokes_nb = strokes_nb
+        self.design_Mach = design_Mach
+        self.fuel_type = 3.0  # Turboprops only use JetFuel
         self.idle_thrust_rate = 0.01
         self.speed_SL = speed_SL
         self.thrust_SL = thrust_SL
@@ -121,14 +137,10 @@ class BasicICEngine(AbstractFuelPropulsion):
         self.specific_shape = None
 
         # Evaluate engine volume based on max power @ 0.0m
-        rpm_vect, _, pme_limit_vect, _ = self.read_map(self.map_file_path)
-        volume = self.max_power / np.max(
-            pme_limit_vect * 1e5 * rpm_vect / 240.0
-        )  # conversion rpm to rad/s included
-        self.volume = volume
+        self.volume = 1e-6
 
         # Declare sub-components attribute
-        self.engine = Engine(power_SL=max_power)
+        self.engine = Engine(power_SL=power_design)
         self.nacelle = None
         self.propeller = None
 
@@ -150,6 +162,291 @@ class BasicICEngine(AbstractFuelPropulsion):
         unknown_keys = [key for key in EngineSetting if key not in self.mixture_values.keys()]
         if unknown_keys:
             raise FastUnknownEngineSettingError("Unknown flight phases: %s", unknown_keys)
+
+        alfa, alfa_p, a41, a45, a8, eta_compress, mc, t4t, t41t, t45t, OPR2_OPR1 = \
+            self.turboprop_geometry_calculation()
+
+        self.alfa = alfa
+        self.alfa_p = alfa
+        self.a41 = a41
+        self.a45 = a45
+        self.a8 = a8
+        self.eta_compress_design = eta_compress
+        self.mc_dp = mc
+        self.t4t_dp = t4t
+        self.t45t_dp = t45t
+        self.OPR2_OPR1_dp = OPR2_OPR1
+
+    @staticmethod
+    def air_coefs_reader():
+
+        """
+        This function reads  table with a et of temperatures, Cv and Cp values. It creates two polynomial interpolation
+        functions, whose coefficients are returned [one for Cv = f(T) and another for Cp = f(T)]
+        """
+        filename = str('T_Cv_Cp.txt')
+        parent_file = os.path.dirname(os.getcwd())
+        file_dir=(parent_file+"\\fuel_propulsion\\basicTurboProp\\T_Cv_Cp.txt")
+        profile = np.loadtxt(file_dir)
+        matrix = np.asmatrix(profile)
+        temp_n = matrix[:, 0]
+        cv_n = matrix[:, 1]
+        cp_n = matrix[:, 2]
+
+        Temp = np.squeeze(np.asarray(temp_n))
+        cv_coefs = np.squeeze(np.asarray(cv_n))
+        cp_coefs = np.squeeze(np.asarray(cp_n))
+
+        cv_t_coefs = np.polyfit(Temp, cv_coefs, 15)
+        cp_t_coefs = np.polyfit(Temp, cp_coefs, 15)
+
+        return cv_t_coefs, cp_t_coefs
+
+    @staticmethod
+    def compute_cp_cv_gamma(Cp_coef, Cv_coef, T):
+        """
+        Obtains the Cv and Cp values for a given Temperature
+
+        It computes the polyfcal functions, shortening code:
+
+        :param Cp_coef: The polynomial interpolation coeficients for the Cp trend [-]
+        :param Cv_coef: The polynomial interpolation coeficients for the Cv trend [-]
+        :param T: the actual Temperature in Kelnvin [K]
+
+        :return Cp: The actual Cp value for the given Temperature
+        :return Cv: The actual Cv value for the given Temperature
+        :return Cp: The actual gamma value for the given Temperature
+        """
+
+        cp_out = np.polyval(Cp_coef, T)
+        cv_out = np.polyval(Cv_coef, T)
+        gamma = cp_out / cv_out
+        return cp_out, cv_out, gamma
+
+    @staticmethod
+    def compute_gammafuns(gamma):
+        """
+        Computes the three gamma functions for each gamma value
+        """
+        f1 = gamma / (gamma - 1)
+        f2 = 1 / f1
+        Fgamma = np.sqrt(gamma) * (2 / (gamma + 1)) ** ((gamma + 1) / (2 * (gamma - 1)))
+
+        return f1, f2, Fgamma
+
+    @staticmethod
+    def air_renewal_coefs():
+        """
+        Creates polynomial coefficients for polynomial interpolation that allow to determine the cabin altitude,
+        which is used for cabin air renewal computation
+        """
+        h = np.array([14500, 20000, 26000, 31000]) * 0.3048
+        h_cab = np.array([0, 3500, 6800, 9300]) * 0.3048
+        coefs_2_return = np.polyfit(h, h_cab, 3)
+        return coefs_2_return
+
+    @staticmethod
+    def air_renewal(coefs_air, h, bleed_control="high"):
+        """
+        Computes the airflow used for cabin air renwal
+
+        :param coefs_air: The polynomial regresion coefficients obtained in airRenewaCoefs()
+        :param h: The flight altitude in meters [m]
+        :param bleed_control: The air packs setting "high" or "low"
+
+        :return m_air: The cabin airflow in [kg/s]
+        """
+        cabinVolume = 5  # in m3
+
+        if bleed_control == "high":
+            control = 1
+        elif bleed_control == "low":
+            control = 0.3
+
+        renovation_time = 2  # in minutes
+
+        if h < 14500 * 0.3048:
+            h_cab = 0
+        else:
+            h_cab = np.polyval(coefs_air, h)
+
+        t_cab = 20 + 273
+        atmosphere = Atmosphere(h_cab, altitude_in_feet=False)
+        p_cab = atmosphere.pressure
+
+        rho_cab = p_cab / 287 / t_cab
+        m_air = cabinVolume * rho_cab / (renovation_time * 60) * control
+        return m_air
+
+
+    def point_design_solver(self,X,T41t, P0, T2t, T25t, T3t, P3t, P, M_sortie, Cp_c, Cv_c,
+                                             bleed_control, h0):
+        global solution_error
+        mc = X[0]
+        T4t = X[1]
+        T45t = X[2]
+        T5t = X[3]
+        P45t = X[4]
+        P5t = X[5]
+        m0 = X[6]
+
+
+        g = self.air_renewal(self.air_renewal_coefs(), h0, bleed_control) / m0
+
+
+        P4t = P3t * self.picc
+
+        Cp2, Cv2, gamma2 = self.compute_cp_cv_gamma(Cp_c, Cv_c, T2t)
+        # f1_2, f2_2, Fgamma_2 = self.compute_gammafuns(gamma2)
+        Cp25, Cv25, gamma25 = self.compute_cp_cv_gamma(Cp_c, Cv_c, T25t)
+        # f1_25, f2_25, Fgamma_25 = self.compute_gammafuns(gamma25)
+        Cp3, Cv3, gamma3 = self.compute_cp_cv_gamma(Cp_c, Cv_c, T3t)
+        # f1_3, f2_3, Fgamma_3 = self.compute_gammafuns(gamma3)
+        Cp4, Cv4, gamma4 = self.compute_cp_cv_gamma(Cp_c, Cv_c, T4t)
+        # f1_4, f2_4, Fgamma_4 = self.compute_gammafuns(gamma4)
+        Cp41, Cv41, gamma41 = self.compute_cp_cv_gamma(Cp_c, Cv_c, T41t)
+        f1_41, f2_41, Fgamma_41 = self.compute_gammafuns(gamma41)
+        Cp45, Cv45, gamma45 = self.compute_cp_cv_gamma(Cp_c, Cv_c, T45t)
+        f1_45, f2_45, Fgamma_45 = self.compute_gammafuns(gamma45)
+        Cp5, Cv5, gamma5 = self.compute_cp_cv_gamma(Cp_c, Cv_c, T5t)
+        f1_5, f2_5, Fgamma_5 = self.compute_gammafuns(gamma5)
+
+        fuel_air_ratio = mc / m0
+        icb = self.inter_compressor_bleed / m0
+
+        f = np.zeros(7)
+        f[0] = (Cp4 * T4t - Cp3 * T3t) * (1 + fuel_air_ratio - g - self.c - icb) - self.etaqL * fuel_air_ratio
+        f[1] = T41t - ((T4t * (1 + fuel_air_ratio - g - self.c - icb) + T3t * self.c) / (1 + fuel_air_ratio - g - icb))
+        f[2] = (1 + fuel_air_ratio - g - icb) * (Cp41 * T41t - Cp45 * T45t) * self.eta_axe - self.P_out / m0 - (
+                Cp3 * T3t - Cp25 * T25t) * (1 - icb) - (Cp25 * T25t - Cp2 * T2t)
+        f[3] = P45t - (P4t * ((T45t / T41t)) ** (f1_41 / self.eta445))
+        f[4] = m0 * 1000 - (((P * 736 / self.eta_Power_train) / (Cp45 * T45t - Cp5 * T5t)) / (1 - g + fuel_air_ratio - icb)) * 1000
+        f[5] = T5t - T45t * (((P5t / P45t) ** (f2_45 * self.eta455)))
+        f[6] = P5t - (P0 * (1 + (gamma5 - 1) / 2 * M_sortie ** 2) ** (f1_5))
+
+        solution_error = np.array(
+            [f[0] / self.etaqL * fuel_air_ratio, f[1] / T41t, f[2] / (Cp3 * T3t - Cp2 * T2t), f[3] / P45t, \
+             f[5] / T5t, f[6] / P5t])
+
+        return f
+
+    def turboprop_geometry_calculation(self):
+        Rg = 287
+
+
+        M0 = self.design_Mach
+        h0 = self.design_altitude
+        P = self.max_power
+        OPR = self.opr_d
+        T41t = self.t41t_d
+        M_sortie = self.exhaustMach_design
+        bleed_control = self.bleed_control_design
+        cab_bleed = self.air_renewal(self.air_renewal_coefs(), h0, bleed_control)
+        OPR1 = self.opr1_design
+        OPR2 = OPR / self.opr1_design
+
+        Cv_c, Cp_c = self.air_coefs_reader()
+
+        atmosphere_0 = Atmosphere(h0, altitude_in_feet=False)
+        P0 = atmosphere_0.pressure
+        T0 = atmosphere_0.temperature
+
+        P0t = P0 * (1 + (1.4 - 1) / 2 * M0 ** 2) ** 3.5
+        T0t = T0 * (1 + (1.4 - 1) / 2 * M0 ** 2)
+
+        P2t = P0t * self.pi02
+        T2t = T0t
+
+        Cp2, Cv2, gamma2 = self.compute_cp_cv_gamma(Cp_c, Cv_c, T2t)
+        f1_2, f2_2, Fgamma_2 = self.compute_gammafuns(gamma2)
+
+        T25t = T2t * OPR1 ** (f2_2 / self.eta_225)
+        P25t = P2t * OPR1
+        P3t = P25t * OPR2
+
+        Cp25, Cv25, gamma25 = self.compute_cp_cv_gamma(Cp_c, Cv_c, T25t)
+        f1_25, f2_25, Fgamma_25 = self.compute_gammafuns(gamma25)
+
+        T3t = T25t * OPR2 ** (f2_25 / self.eta_253)
+        eta_compress = math.log(OPR) / math.log(T3t / T2t) * f2_2
+
+        P4t = P3t * self.picc
+        P41t = P4t
+
+        global solution_error
+        solution_error = np.zeros(7)
+
+        X0 = np.array([0.06, 1350, 1000, 800, 400000, 110000, 3.5])
+        # z = np.zeros(len(X0))
+        solution_vector = fsolve(self.point_design_solver, X0,
+                   (T41t, P0, T2t, T25t, T3t, P3t, P, M_sortie, Cp_c, Cv_c,bleed_control, h0), xtol=1e-4)
+        mc = solution_vector[0]
+        T4t = solution_vector[1]
+        T45t = solution_vector[2]
+        T5t = solution_vector[3]
+        P45t = solution_vector[4]
+        P5t = solution_vector[5]
+        m0 = solution_vector[6]
+
+        f = mc / m0
+        g = cab_bleed / m0
+        icb = self.inter_compressor_bleed / m0
+
+        Cp3, Cv3, gamma3 = self.compute_cp_cv_gamma(Cp_c, Cv_c, T3t)
+        f1_3, f2_3, Fgamma_3 = self.compute_gammafuns(gamma3)
+        Cp4, Cv4, gamma4 = self.compute_cp_cv_gamma(Cp_c, Cv_c, T4t)
+        f1_4, f2_4, Fgamma_4 = self.compute_gammafuns(gamma4)
+        Cp41, Cv41, gamma41 = self.compute_cp_cv_gamma(Cp_c, Cv_c, T41t)
+        f1_41, f2_41, Fgamma_41 = self.compute_gammafuns(gamma41)
+        Cp45, Cv45, gamma45 = self.compute_cp_cv_gamma(Cp_c, Cv_c, T45t)
+        f1_45, f2_45, Fgamma_45 = self.compute_gammafuns(gamma45)
+        Cp5, Cv5, gamma5 = self.compute_cp_cv_gamma(Cp_c, Cv_c, T5t)
+        f1_5, f2_5, Fgamma_5 = self.compute_gammafuns(gamma5)
+
+        alfa = T45t / T41t
+        alfa_p = P45t / P41t
+
+        OPR_check = (Cp2 / Cp3 / (1 - icb) + self.eta_axe * (1 + f - g - icb) / (1 - icb) * (
+                Cp41 - Cp45 * alfa) / Cp3 * T41t / T2t \
+                     - self.P_out / (Cp3 * m0 * (1 - icb) * T2t) - T25t / T2t * Cp25 / Cp3 * (1 / (1 - icb) - 1)) ** (
+                            f1_2 * eta_compress)
+
+        A41 = m0 * (1 + f - g - icb) * np.sqrt(T41t * Rg) / P4t / Fgamma_41
+        A45 = m0 * (1 + f - g - icb) * np.sqrt(T45t * Rg) / P45t / Fgamma_45
+        A8_1 = m0 * (1 + f - g - icb) * np.sqrt(T5t * Rg) / P5t
+        A8_2 = np.sqrt(gamma5) * M_sortie * (1 + (gamma5 - 1) / 2 * M_sortie ** 2) ** (
+                (gamma5 + 1) / (2 * (1 - gamma5)))
+        A8 = A8_1 / A8_2
+
+        T8 = T5t / (1 + (gamma5 - 1) / 2 * M_sortie ** 2)
+        V8 = M_sortie * np.sqrt(gamma5 * Rg * T8)
+
+        Exhaust_Thrust = m0 * (1 + f - icb - g) * (V8 - M0 * np.sqrt(T0 * 287 * 1.4))
+
+        #
+        Power_check = (Cp45 * T45t - Cp5 * T5t) * m0 / 736 * (1 - g + f - icb) * self.eta_Power_train
+        print("--")
+        print("DESSIGN CP variable  |||    eta23 =", round(eta_compress, 5), "   eta445 =", round(self.eta445, 5),
+              "   eta455 =",
+              round(self.eta455, 5), "   eta_axe", round(self.eta_axe, 5))
+        print("Temperatures [K]  :     ", "T2t=", round(T2t), "T25t=", round(T25t), "T3t=", round(T3t), "T4t=",
+              round(T4t),
+              " T41t=", round(T41t), "T45t=", round(T45t), "T5t=", round(T5t))
+        print("Pressures  [Pa]   :     ", "P2t=", round(P2t), "P25t=", round(P25t), "P3t=", round(P3t), "P4t=",
+              round(P4t),
+              "P45t=", round(P45t), "P5t=", round(P5t))
+        print("Airflows [kg/s]   :       m_air = ", round(m0, 5), "    m_fuel = ", round(mc, 8), "   m_bleed=",
+              round(g * m0, 5), "   m_cooling=", round(self.c * m0, 5), "   m_inter-compressor=", round(icb * m0, 5))
+        print("A41=", round(A41, 5), "A45=", round(A45, 4), "A8=", round(A8, 3), "alfa=", round(alfa, 4))
+        print(" OPR_check=", round(OPR_check, 2), "P =", round(Power_check), "Thrust =", round(Exhaust_Thrust))
+        print("----------------------------------------------------")
+        print("CONVERGENCE ERROR=", solution_error)
+        # print("CP2", round(Cp2), "CP3=", round(Cp3), "CP41=", round(Cp41), "CP45=", round(Cp45), "CP5=", round(Cp5))
+
+        return alfa, alfa_p, A41, A45, A8, eta_compress, mc, T4t, T41t, T45t, OPR2 / OPR1
+
+
+
 
     @staticmethod
     def read_map(map_file_path):
@@ -228,13 +525,13 @@ class BasicICEngine(AbstractFuelPropulsion):
                 flight_points.thrust = thrust
 
     def _compute_flight_points(
-        self,
-        mach: Union[float, Sequence],
-        altitude: Union[float, Sequence],
-        engine_setting: Union[EngineSetting, Sequence],
-        thrust_is_regulated: Optional[Union[bool, Sequence]] = None,
-        thrust_rate: Optional[Union[float, Sequence]] = None,
-        thrust: Optional[Union[float, Sequence]] = None,
+            self,
+            mach: Union[float, Sequence],
+            altitude: Union[float, Sequence],
+            engine_setting: Union[EngineSetting, Sequence],
+            thrust_is_regulated: Optional[Union[bool, Sequence]] = None,
+            thrust_rate: Optional[Union[float, Sequence]] = None,
+            thrust: Optional[Union[float, Sequence]] = None,
     ) -> Tuple[Union[float, Sequence], Union[float, Sequence], Union[float, Sequence]]:
         """
         Same as :meth:`compute_flight_points`.
@@ -311,9 +608,9 @@ class BasicICEngine(AbstractFuelPropulsion):
 
     @staticmethod
     def _check_thrust_inputs(
-        thrust_is_regulated: Optional[Union[float, Sequence]],
-        thrust_rate: Optional[Union[float, Sequence]],
-        thrust: Optional[Union[float, Sequence]],
+            thrust_is_regulated: Optional[Union[float, Sequence]],
+            thrust_rate: Optional[Union[float, Sequence]],
+            thrust: Optional[Union[float, Sequence]],
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Checks that inputs are consistent and return them in proper shape.
@@ -373,7 +670,7 @@ class BasicICEngine(AbstractFuelPropulsion):
                     "provided."
                 )
             if np.shape(thrust_rate) != np.shape(thrust_is_regulated) or np.shape(
-                thrust
+                    thrust
             ) != np.shape(thrust_is_regulated):
                 raise FastBasicICEngineInconsistentInputParametersError(
                     "When use_thrust_rate is a sequence, both thrust_rate and thrust should have "
@@ -383,7 +680,7 @@ class BasicICEngine(AbstractFuelPropulsion):
         return thrust_is_regulated, thrust_rate, thrust
 
     def propeller_efficiency(
-        self, thrust: Union[float, Sequence[float]], atmosphere: Atmosphere
+            self, thrust: Union[float, Sequence[float]], atmosphere: Atmosphere
     ) -> Union[float, Sequence]:
         """
         Compute the propeller efficiency.
@@ -435,10 +732,10 @@ class BasicICEngine(AbstractFuelPropulsion):
                 )
                 altitude = atmosphere.get_altitude(altitude_in_feet=False)[idx]
                 propeller_efficiency[idx] = (
-                    lower_bound
-                    + (upper_bound - lower_bound)
-                    * np.minimum(altitude, self.design_altitude)
-                    / self.design_altitude
+                        lower_bound
+                        + (upper_bound - lower_bound)
+                        * np.minimum(altitude, self.design_altitude)
+                        / self.design_altitude
                 )
 
         return propeller_efficiency
@@ -457,11 +754,12 @@ class BasicICEngine(AbstractFuelPropulsion):
 
         return max_power
 
+
     def sfc(
-        self,
-        thrust: Union[float, Sequence[float]],
-        engine_setting: Union[float, Sequence[float]],
-        atmosphere: Atmosphere,
+            self,
+            thrust: Union[float, Sequence[float]],
+            engine_setting: Union[float, Sequence[float]],
+            atmosphere: Atmosphere,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Computation of the SFC.
@@ -495,7 +793,7 @@ class BasicICEngine(AbstractFuelPropulsion):
         sfc = np.zeros(np.size(thrust))
         if np.size(thrust) == 1:
             real_power = (
-                thrust * atmosphere.true_airspeed / self.propeller_efficiency(thrust, atmosphere)
+                    thrust * atmosphere.true_airspeed / self.propeller_efficiency(thrust, atmosphere)
             )
             torque = real_power / (rpm_values * np.pi / 30.0)
             sfc = ICE_sfc(torque, rpm_values) * mixture_values
@@ -506,16 +804,16 @@ class BasicICEngine(AbstractFuelPropulsion):
                 )
                 local_atmosphere.mach = atmosphere.mach[idx]
                 real_power[idx] = (
-                    thrust[idx]
-                    * atmosphere.true_airspeed[idx]
-                    / self.propeller_efficiency(thrust[idx], local_atmosphere)
+                        thrust[idx]
+                        * atmosphere.true_airspeed[idx]
+                        / self.propeller_efficiency(thrust[idx], local_atmosphere)
                 )
                 torque[idx] = real_power[idx] / (rpm_values[idx] * np.pi / 30.0)
-                sfc[idx] = ICE_sfc(torque[idx], rpm_values[idx]) * mixture_values[idx]
+                sfc = ICE_sfc(torque[idx], rpm_values[idx]) * mixture_values[idx]
         return sfc, real_power
 
     def max_thrust(
-        self, engine_setting: Union[float, Sequence[float]], atmosphere: Atmosphere,
+            self, engine_setting: Union[float, Sequence[float]], atmosphere: Atmosphere,
     ) -> np.ndarray:
         """
         Computation of maximum thrust either due to propeller thrust limit or ICE max power.
@@ -538,10 +836,10 @@ class BasicICEngine(AbstractFuelPropulsion):
             )
         altitude = atmosphere.get_altitude(altitude_in_feet=False)
         thrust_max_propeller = (
-            lower_bound
-            + (upper_bound - lower_bound)
-            * np.minimum(altitude, self.design_altitude)
-            / self.design_altitude
+                lower_bound
+                + (upper_bound - lower_bound)
+                * np.minimum(altitude, self.design_altitude)
+                / self.design_altitude
         )
 
         # Calculate engine max power @ given RPM & altitude
@@ -601,10 +899,10 @@ class BasicICEngine(AbstractFuelPropulsion):
                     thrust_interp[idx], local_atmosphere
                 )
                 mechanical_power = (
-                    thrust_interp[idx] * atmosphere.true_airspeed[idx] / propeller_efficiency
+                        thrust_interp[idx] * atmosphere.true_airspeed[idx] / propeller_efficiency
                 )
                 if (
-                    np.min(mechanical_power) > max_power[idx]
+                        np.min(mechanical_power) > max_power[idx]
                 ):  # take the lower bound efficiency for calculation
                     efficiency_relative_error = 1
                     local_atmosphere = Atmosphere(altitude[idx], altitude_in_feet=False)
@@ -612,7 +910,7 @@ class BasicICEngine(AbstractFuelPropulsion):
                     propeller_efficiency = propeller_efficiency[0]
                     while efficiency_relative_error > 1e-2:
                         thrust_max_global[idx] = (
-                            max_power[idx] * propeller_efficiency / atmosphere.true_airspeed[idx]
+                                max_power[idx] * propeller_efficiency / atmosphere.true_airspeed[idx]
                         )
                         propeller_efficiency_new = self.propeller_efficiency(
                             thrust_max_global[idx], local_atmosphere
@@ -652,10 +950,10 @@ class BasicICEngine(AbstractFuelPropulsion):
 
         # Compute engine dimensions
         self.engine.length = self.ref["length"] * (self.max_power / self.ref["max_power"]) ** (
-            1 / 3
+                1 / 3
         )
         self.engine.height = self.ref["height"] * (self.max_power / self.ref["max_power"]) ** (
-            1 / 3
+                1 / 3
         )
         self.engine.width = self.ref["width"] * (self.max_power / self.ref["max_power"]) ** (1 / 3)
 
@@ -690,7 +988,7 @@ class BasicICEngine(AbstractFuelPropulsion):
         reynolds = unit_reynolds * self.nacelle.length
         # Roskam method for wing-nacelle interaction factor (vol 6 page 3.62)
         cf_nac = 0.455 / (
-            (1 + 0.144 * mach ** 2) ** 0.65 * (math.log10(reynolds)) ** 2.58
+                (1 + 0.144 * mach ** 2) ** 0.65 * (math.log10(reynolds)) ** 2.58
         )  # 100% turbulent
         f = self.nacelle.length / math.sqrt(4 * self.nacelle.height * self.nacelle.width / math.pi)
         ff_nac = 1 + 0.35 / f  # Raymer (seen in Gudmunsson)

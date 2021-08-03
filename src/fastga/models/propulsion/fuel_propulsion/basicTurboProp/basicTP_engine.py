@@ -206,11 +206,11 @@ class BasicTPEngine(AbstractFuelPropulsion):
         """
         Obtains the Cv and Cp values for a given Temperature
 
-        It computes the polyfcal functions, shortening code:
+        It computes the polyval functions, shortening code:
 
-        :param cp_coefficient: The polynomial interpolation coeficients for the Cp trend [-]
-        :param cv_coefficient: The polynomial interpolation coeficients for the Cv trend [-]
-        :param temperature: the actual Temperature in Kelnvin [K]
+        :param cp_coefficient: The polynomial interpolation coefficients for the Cp trend [-]
+        :param cv_coefficient: The polynomial interpolation coefficients for the Cv trend [-]
+        :param temperature: the actual Temperature in Kelvin [K]
 
         :return cp_out: The actual Cp value for the given Temperature
         :return cv_out: The actual Cv value for the given Temperature
@@ -277,171 +277,180 @@ class BasicTPEngine(AbstractFuelPropulsion):
         m_air = cabin_volume * rho_cab / (renovation_time * 60) * control
         return m_air
 
-    def point_design_solver(self, X, T41t, P0, T2t, T25t, T3t, P3t, P, M_sortie, Cp_c, Cv_c,
+    def point_design_solver(self, var_to_solve, t41t, p0, t2t, t25t, t3t, p3t, power, exhaust_mach, cp_c, cv_c,
                             bleed_control, h0):
+        """
+        Solver for the design point.
+        """
         global solution_error
-        mc = X[0]
-        T4t = X[1]
-        T45t = X[2]
-        T5t = X[3]
-        P45t = X[4]
-        P5t = X[5]
-        m0 = X[6]
+        mc = var_to_solve[0]
+        T4t = var_to_solve[1]
+        T45t = var_to_solve[2]
+        T5t = var_to_solve[3]
+        P45t = var_to_solve[4]
+        P5t = var_to_solve[5]
+        m0 = var_to_solve[6]
 
         g = self.air_renewal(self.air_renewal_coefficients(), h0, bleed_control) / m0
 
-        P4t = P3t * self.picc
+        p4t = p3t * self.picc
 
-        Cp2, Cv2, gamma2 = self.compute_cp_cv_gamma(Cp_c, Cv_c, T2t)
-        # f1_2, f2_2, Fgamma_2 = self.compute_gammafuns(gamma2)
-        Cp25, Cv25, gamma25 = self.compute_cp_cv_gamma(Cp_c, Cv_c, T25t)
-        # f1_25, f2_25, Fgamma_25 = self.compute_gammafuns(gamma25)
-        Cp3, Cv3, gamma3 = self.compute_cp_cv_gamma(Cp_c, Cv_c, T3t)
-        # f1_3, f2_3, Fgamma_3 = self.compute_gammafuns(gamma3)
-        Cp4, Cv4, gamma4 = self.compute_cp_cv_gamma(Cp_c, Cv_c, T4t)
-        # f1_4, f2_4, Fgamma_4 = self.compute_gammafuns(gamma4)
-        Cp41, Cv41, gamma41 = self.compute_cp_cv_gamma(Cp_c, Cv_c, T41t)
-        f1_41, f2_41, Fgamma_41 = self.compute_gamma_functions(gamma41)
-        Cp45, Cv45, gamma45 = self.compute_cp_cv_gamma(Cp_c, Cv_c, T45t)
-        f1_45, f2_45, Fgamma_45 = self.compute_gamma_functions(gamma45)
-        Cp5, Cv5, gamma5 = self.compute_cp_cv_gamma(Cp_c, Cv_c, T5t)
-        f1_5, f2_5, Fgamma_5 = self.compute_gamma_functions(gamma5)
+        cp2, cv2, gamma2 = self.compute_cp_cv_gamma(cp_c, cv_c, t2t)
+        cp25, cv25, gamma25 = self.compute_cp_cv_gamma(cp_c, cv_c, t25t)
+        cp3, cv3, gamma3 = self.compute_cp_cv_gamma(cp_c, cv_c, t3t)
+        cp4, cv4, gamma4 = self.compute_cp_cv_gamma(cp_c, cv_c, T4t)
+        cp41, cv41, gamma41 = self.compute_cp_cv_gamma(cp_c, cv_c, t41t)
+        f1_41, f2_41, function_gamma_41 = self.compute_gamma_functions(gamma41)
+        cp45, cv45, gamma45 = self.compute_cp_cv_gamma(cp_c, cv_c, T45t)
+        f1_45, f2_45, function_gamma_45 = self.compute_gamma_functions(gamma45)
+        cp5, cv5, gamma5 = self.compute_cp_cv_gamma(cp_c, cv_c, T5t)
+        f1_5, f2_5, function_gamma_5 = self.compute_gamma_functions(gamma5)
 
         fuel_air_ratio = mc / m0
         icb = self.inter_compressor_bleed / m0
 
         f = np.zeros(7)
-        f[0] = (Cp4 * T4t - Cp3 * T3t) * (1 + fuel_air_ratio - g - self.c - icb) - self.etaqL * fuel_air_ratio
-        f[1] = T41t - ((T4t * (1 + fuel_air_ratio - g - self.c - icb) + T3t * self.c) / (1 + fuel_air_ratio - g - icb))
+        f[0] = (cp4 * T4t - cp3 * t3t) * (1 + fuel_air_ratio - g - self.c - icb) - self.etaqL * fuel_air_ratio
+        f[1] = t41t - ((T4t * (1 + fuel_air_ratio - g - self.c - icb) + t3t * self.c) / (1 + fuel_air_ratio - g - icb))
         f[2] = (1 + fuel_air_ratio - g - icb) * (
-                    Cp41 * T41t - Cp45 * T45t) * self.eta_axe - self.hp_shaft_power_out / m0 - (
-                       Cp3 * T3t - Cp25 * T25t) * (1 - icb) - (Cp25 * T25t - Cp2 * T2t)
-        f[3] = P45t - (P4t * ((T45t / T41t)) ** (f1_41 / self.eta445))
-        f[4] = m0 * 1000 - (((P * 736 / self.gearbox_efficiency) / (Cp45 * T45t - Cp5 * T5t)) / (
-                    1 - g + fuel_air_ratio - icb)) * 1000
-        f[5] = T5t - T45t * (((P5t / P45t) ** (f2_45 * self.eta455)))
-        f[6] = P5t - (P0 * (1 + (gamma5 - 1) / 2 * M_sortie ** 2) ** (f1_5))
+                cp41 * t41t - cp45 * T45t) * self.eta_axe - self.hp_shaft_power_out / m0 - (
+                       cp3 * t3t - cp25 * t25t) * (1 - icb) - (cp25 * t25t - cp2 * t2t)
+        f[3] = P45t - (p4t * (T45t / t41t) ** (f1_41 / self.eta445))
+        f[4] = m0 * 1000 - (((power * 736 / self.gearbox_efficiency) / (cp45 * T45t - cp5 * T5t)) / (
+                1 - g + fuel_air_ratio - icb)) * 1000
+        f[5] = T5t - T45t * ((P5t / P45t) ** (f2_45 * self.eta455))
+        f[6] = P5t - (p0 * (1 + (gamma5 - 1) / 2 * exhaust_mach ** 2) ** (f1_5))
 
         solution_error = np.array(
-            [f[0] / self.etaqL * fuel_air_ratio, f[1] / T41t, f[2] / (Cp3 * T3t - Cp2 * T2t), f[3] / P45t, \
+            [f[0] / self.etaqL * fuel_air_ratio, f[1] / t41t, f[2] / (cp3 * t3t - cp2 * t2t), f[3] / P45t, \
              f[5] / T5t, f[6] / P5t])
 
         return f
 
     def turboprop_geometry_calculation(self):
-        Rg = 287
 
-        M0 = self.design_mach
+        """
+        This method is the core of the Turboprop Class constructor. It obtains the geometry of the turboprop: the turbine
+        and exhaust sections A41, A45 and A8 as well as the alfa parameter. These values are returned to the constructor
+        and stored as attributes as these four values WILL BE CONSTANT FOR ALL THE TURBOPROP OPERATION REGIMES (for
+        further info, read the documentation of the turboprop model). Other, non-constant values, such us temperatures
+        or compression ratios are also obtained.
+        """
+        rg = 287
+
+        design_mach = self.design_mach
         h0 = self.design_altitude
-        P = self.max_power
-        OPR = self.opr_d
-        T41t = self.t41t_d
-        M_sortie = self.exhaust_mach_design
+        power = self.max_power
+        global_opr = self.opr_d
+        t41t = self.t41t_d
+        exhaust_mach = self.exhaust_mach_design
         bleed_control = self.bleed_control_design
         cab_bleed = self.air_renewal(self.air_renewal_coefficients(), h0, bleed_control)
-        OPR1 = self.opr1_design
-        OPR2 = OPR / self.opr1_design
+        opr1 = self.opr1_design
+        opr2 = global_opr / self.opr1_design
 
-        Cv_c, Cp_c = self.air_coefficients_reader()
+        cv_c, cp_c = self.air_coefficients_reader()
 
         atmosphere_0 = Atmosphere(h0, altitude_in_feet=False)
-        P0 = atmosphere_0.pressure
-        T0 = atmosphere_0.temperature
+        p0 = atmosphere_0.pressure
+        t0 = atmosphere_0.temperature
 
-        P0t = P0 * (1 + (1.4 - 1) / 2 * M0 ** 2) ** 3.5
-        T0t = T0 * (1 + (1.4 - 1) / 2 * M0 ** 2)
+        p0t = p0 * (1 + (1.4 - 1) / 2 * design_mach ** 2) ** 3.5
+        t0t = t0 * (1 + (1.4 - 1) / 2 * design_mach ** 2)
 
-        P2t = P0t * self.pi02
-        T2t = T0t
+        P2t = p0t * self.pi02
+        T2t = t0t
 
-        Cp2, Cv2, gamma2 = self.compute_cp_cv_gamma(Cp_c, Cv_c, T2t)
-        f1_2, f2_2, Fgamma_2 = self.compute_gamma_functions(gamma2)
+        cp2, cv2, gamma2 = self.compute_cp_cv_gamma(cp_c, cv_c, T2t)
+        f1_2, f2_2, f_gamma_2 = self.compute_gamma_functions(gamma2)
 
-        T25t = T2t * OPR1 ** (f2_2 / self.eta_225)
-        P25t = P2t * OPR1
-        P3t = P25t * OPR2
+        t25t = T2t * opr1 ** (f2_2 / self.eta_225)
+        p25t = P2t * opr1
+        p3t = p25t * opr2
 
-        Cp25, Cv25, gamma25 = self.compute_cp_cv_gamma(Cp_c, Cv_c, T25t)
-        f1_25, f2_25, Fgamma_25 = self.compute_gamma_functions(gamma25)
+        cp25, cv25, gamma25 = self.compute_cp_cv_gamma(cp_c, cv_c, t25t)
+        f1_25, f2_25, f_gamma_25 = self.compute_gamma_functions(gamma25)
 
-        T3t = T25t * OPR2 ** (f2_25 / self.eta_253)
-        eta_compress = math.log(OPR) / math.log(T3t / T2t) * f2_2
+        t3t = t25t * opr2 ** (f2_25 / self.eta_253)
+        eta_compress = math.log(global_opr) / math.log(t3t / T2t) * f2_2
 
-        P4t = P3t * self.picc
-        P41t = P4t
+        p4t = p3t * self.picc
+        p41t = p4t
 
         global solution_error
         solution_error = np.zeros(7)
 
-        X0 = np.array([0.06, 1350, 1000, 800, 400000, 110000, 3.5])
+        initial_values = np.array([0.06, 1350, 1000, 800, 400000, 110000, 3.5])
         # z = np.zeros(len(X0))
-        solution_vector = fsolve(self.point_design_solver, X0,
-                                 (T41t, P0, T2t, T25t, T3t, P3t, P, M_sortie, Cp_c, Cv_c, bleed_control, h0), xtol=1e-4)
+        solution_vector = fsolve(self.point_design_solver, initial_values,
+                                 (t41t, p0, T2t, t25t, t3t, p3t, power, exhaust_mach, cp_c, cv_c, bleed_control, h0),
+                                 xtol=1e-4)
         mc = solution_vector[0]
-        T4t = solution_vector[1]
-        T45t = solution_vector[2]
-        T5t = solution_vector[3]
+        t4t = solution_vector[1]
+        t45t = solution_vector[2]
+        t5t = solution_vector[3]
         P45t = solution_vector[4]
-        P5t = solution_vector[5]
-        m0 = solution_vector[6]
+        p5t = solution_vector[5]
+        airflow_design = solution_vector[6]
 
-        f = mc / m0
-        g = cab_bleed / m0
-        icb = self.inter_compressor_bleed / m0
+        f = mc / airflow_design
+        g = cab_bleed / airflow_design
+        icb = self.inter_compressor_bleed / airflow_design
 
-        Cp3, Cv3, gamma3 = self.compute_cp_cv_gamma(Cp_c, Cv_c, T3t)
-        f1_3, f2_3, Fgamma_3 = self.compute_gamma_functions(gamma3)
-        Cp4, Cv4, gamma4 = self.compute_cp_cv_gamma(Cp_c, Cv_c, T4t)
-        f1_4, f2_4, Fgamma_4 = self.compute_gamma_functions(gamma4)
-        Cp41, Cv41, gamma41 = self.compute_cp_cv_gamma(Cp_c, Cv_c, T41t)
-        f1_41, f2_41, Fgamma_41 = self.compute_gamma_functions(gamma41)
-        Cp45, Cv45, gamma45 = self.compute_cp_cv_gamma(Cp_c, Cv_c, T45t)
-        f1_45, f2_45, Fgamma_45 = self.compute_gamma_functions(gamma45)
-        Cp5, Cv5, gamma5 = self.compute_cp_cv_gamma(Cp_c, Cv_c, T5t)
-        f1_5, f2_5, Fgamma_5 = self.compute_gamma_functions(gamma5)
+        cp3, cv3, gamma3 = self.compute_cp_cv_gamma(cp_c, cv_c, t3t)
+        cp41, cv41, gamma41 = self.compute_cp_cv_gamma(cp_c, cv_c, t41t)
+        f1_41, f2_41, f_gamma_41 = self.compute_gamma_functions(gamma41)
+        cp45, cv45, gamma45 = self.compute_cp_cv_gamma(cp_c, cv_c, t45t)
+        f1_45, f2_45, f_gamma_45 = self.compute_gamma_functions(gamma45)
+        cp5, cv5, gamma5 = self.compute_cp_cv_gamma(cp_c, cv_c, t5t)
 
-        alfa = T45t / T41t
-        alfa_p = P45t / P41t
+        alfa = t45t / t41t
+        alfa_p = P45t / p41t
 
-        OPR_check = (Cp2 / Cp3 / (1 - icb) + self.eta_axe * (1 + f - g - icb) / (1 - icb) * (
-                Cp41 - Cp45 * alfa) / Cp3 * T41t / T2t \
-                     - self.hp_shaft_power_out / (Cp3 * m0 * (1 - icb) * T2t) - T25t / T2t * Cp25 / Cp3 * (
-                                 1 / (1 - icb) - 1)) ** (
-                            f1_2 * eta_compress)
+        opr_check = (cp2 / cp3 / (1 - icb) + self.eta_axe * (1 + f - g - icb) / (1 - icb) *
+                     (cp41 - cp45 * alfa) / cp3 * t41t / T2t - self.hp_shaft_power_out /
+                     (cp3 * airflow_design * (1 - icb) * T2t) - t25t / T2t * cp25 / cp3 * (1 / (1 - icb) - 1)) \
+                    ** (f1_2 * eta_compress)
 
-        A41 = m0 * (1 + f - g - icb) * np.sqrt(T41t * Rg) / P4t / Fgamma_41
-        A45 = m0 * (1 + f - g - icb) * np.sqrt(T45t * Rg) / P45t / Fgamma_45
-        A8_1 = m0 * (1 + f - g - icb) * np.sqrt(T5t * Rg) / P5t
-        A8_2 = np.sqrt(gamma5) * M_sortie * (1 + (gamma5 - 1) / 2 * M_sortie ** 2) ** (
+        a41 = airflow_design * (1 + f - g - icb) * np.sqrt(t41t * rg) / p4t / f_gamma_41
+        a45 = airflow_design * (1 + f - g - icb) * np.sqrt(t45t * rg) / P45t / f_gamma_45
+        a8_1 = airflow_design * (1 + f - g - icb) * np.sqrt(t5t * rg) / p5t
+        a8_2 = np.sqrt(gamma5) * exhaust_mach * (1 + (gamma5 - 1) / 2 * exhaust_mach ** 2) ** (
                 (gamma5 + 1) / (2 * (1 - gamma5)))
-        A8 = A8_1 / A8_2
+        a8 = a8_1 / a8_2
 
-        T8 = T5t / (1 + (gamma5 - 1) / 2 * M_sortie ** 2)
-        V8 = M_sortie * np.sqrt(gamma5 * Rg * T8)
+        t8 = t5t / (1 + (gamma5 - 1) / 2 * exhaust_mach ** 2)
+        v8 = exhaust_mach * np.sqrt(gamma5 * rg * t8)
 
-        Exhaust_Thrust = m0 * (1 + f - icb - g) * (V8 - M0 * np.sqrt(T0 * 287 * 1.4))
+        exhaust_thrust = airflow_design * (1 + f - icb - g) * (v8 - design_mach * np.sqrt(t0 * 287 * 1.4))
 
         #
-        Power_check = (Cp45 * T45t - Cp5 * T5t) * m0 / 736 * (1 - g + f - icb) * self.gearbox_efficiency
+        power_check = (cp45 * t45t - cp5 * t5t) * airflow_design / 736 * (1 - g + f - icb) * self.gearbox_efficiency
         print("--")
         print("DESSIGN CP variable  |||    eta23 =", round(eta_compress, 5), "   eta445 =", round(self.eta445, 5),
               "   eta455 =",
               round(self.eta455, 5), "   eta_axe", round(self.eta_axe, 5))
-        print("Temperatures [K]  :     ", "T2t=", round(T2t), "T25t=", round(T25t), "T3t=", round(T3t), "T4t=",
-              round(T4t),
-              " T41t=", round(T41t), "T45t=", round(T45t), "T5t=", round(T5t))
-        print("Pressures  [Pa]   :     ", "P2t=", round(P2t), "P25t=", round(P25t), "P3t=", round(P3t), "P4t=",
-              round(P4t),
-              "P45t=", round(P45t), "P5t=", round(P5t))
-        print("Airflows [kg/s]   :       m_air = ", round(m0, 5), "    m_fuel = ", round(mc, 8), "   m_bleed=",
-              round(g * m0, 5), "   m_cooling=", round(self.c * m0, 5), "   m_inter-compressor=", round(icb * m0, 5))
-        print("A41=", round(A41, 5), "A45=", round(A45, 4), "A8=", round(A8, 3), "alfa=", round(alfa, 4))
-        print(" OPR_check=", round(OPR_check, 2), "P =", round(Power_check), "Thrust =", round(Exhaust_Thrust))
+        print("Temperatures [K]  :     ", "T2t=", round(T2t), "T25t=", round(t25t), "T3t=", round(t3t), "T4t=",
+              round(t4t),
+              " T41t=", round(t41t), "T45t=", round(t45t), "T5t=", round(t5t))
+        print("Pressures  [Pa]   :     ", "P2t=", round(P2t), "P25t=", round(p25t), "P3t=", round(p3t), "P4t=",
+              round(p4t),
+              "P45t=", round(P45t), "P5t=", round(p5t))
+        print("Airflows [kg/s]   :       m_air = ", round(airflow_design, 5), "    m_fuel = ", round(mc, 8),
+              "   m_bleed=",
+              round(g * airflow_design, 5), "   m_cooling=", round(self.c * airflow_design, 5),
+              "   m_inter-compressor=", round(icb * airflow_design, 5))
+        print("A41=", round(a41, 5), "A45=", round(a45, 4), "A8=", round(a8, 3), "alfa=", round(alfa, 4))
+        print(" OPR_check=", round(opr_check, 2), "P =", round(power_check), "Thrust =", round(exhaust_thrust))
         print("----------------------------------------------------")
         print("CONVERGENCE ERROR=", solution_error)
         # print("CP2", round(Cp2), "CP3=", round(Cp3), "CP41=", round(Cp41), "CP45=", round(Cp45), "CP5=", round(Cp5))
 
-        return alfa, alfa_p, A41, A45, A8, eta_compress, mc, T4t, T41t, T45t, OPR2 / OPR1
+        return alfa, alfa_p, a41, a45, a8, eta_compress, mc, t4t, t41t, t45t, opr2 / opr1
+
+
+
+
 
     @staticmethod
     def read_map(map_file_path):

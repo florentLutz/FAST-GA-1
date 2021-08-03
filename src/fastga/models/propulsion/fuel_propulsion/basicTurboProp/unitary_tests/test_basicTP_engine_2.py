@@ -785,13 +785,15 @@ EFFICIENCY_CL = np.array(
 
 
 def test_compute_flight_points():
-    # BasicICEngine(max_power(W), design_altitude(m), design_speed(m/s), fuel_type, strokes_nb, prop_layout)
+
+    # BasicTPEngine(power_dp[SHP], t41t_design[K], opr_design[-], design_altitude[m],
+    #               design_mach[-], prop_layout, bleed_control_design["high" or "low"])
     engine = BasicTPEngine(
         1000,
         1350,
         9.5,
-        0.0,
-        0.0,
+        9000,
+        0.5,
         1.0,
         "high",
         SPEED,
@@ -803,6 +805,17 @@ def test_compute_flight_points():
         THRUST_CL_LIMIT,
         EFFICIENCY_CL,
     )  # load a 4-strokes 130kW gasoline engine
+
+    # Test with scalars
+    flight_point = FlightPoint(
+        mach=0.4, altitude=7000.0, engine_setting=EngineSetting.CLIMB.value, thrust=3300.0
+    )  # with engine_setting as int
+
+    engine.turboshaft_performance_RealGass(0,0,0.08363138,show_info=True)
+    engine.compute_flight_points(flight_point)
+    np.testing.assert_allclose(flight_point.thrust_rate, 0.5, rtol=1e-2)
+    np.testing.assert_allclose(flight_point.sfc, 1.356846e-05, rtol=1e-2)
+
 
 
 

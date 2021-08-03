@@ -58,13 +58,13 @@ NACELLE_LABELS = {
 class BasicTPEngine(AbstractFuelPropulsion):
     def __init__(
             self,
-            power_design: float,
+            power_design: float, # In Shaft Horsepower (SHP)
             t41t_design: float,
             opr_design: float,
             design_altitude: float,
             design_mach: float,
             prop_layout: float,
-            bleed_control_design: str,
+            bleed_control: str,
             speed_SL,
             thrust_SL,
             thrust_limit_SL,
@@ -105,12 +105,18 @@ class BasicTPEngine(AbstractFuelPropulsion):
         # compression stage (in station 25)
         self.exhaust_mach_design = 0.4  # Mach of the exhaust gasses in the design point
         self.opr1_design = 0.25 * opr_design  # Compression ratio of the first stage in the design point
-        self.bleed_control_design = bleed_control_design
+        self.bleed_control_design = "high"
+        self.bleed_control = bleed_control
 
         # Definition of the Turboprop design parameters
-        self.max_power = power_design
+        self.design_point_power = power_design
         self.t41t_d = t41t_design
         self.opr_d = opr_design
+
+        # Definition of the Turboprop limits
+        self.itt_limit = 1100 # In Kelvin
+        self.power_limit = 700 # In SHP, due to the gearbox constraints
+        self.opr_limit = 12 # To avoid compressor instabilities
 
         # Original atributes from the ICE class, modified where convenient
         self.ref = {
@@ -122,6 +128,8 @@ class BasicTPEngine(AbstractFuelPropulsion):
         }
         self.prop_layout = prop_layout
         self.design_altitude = design_altitude
+        self.design_point_altitude = 0
+        self.design_point_mach=0
         self.design_mach = design_mach
         self.fuel_type = 3.0  # Turboprops only use JetFuel
         self.idle_thrust_rate = 0.01
@@ -166,7 +174,7 @@ class BasicTPEngine(AbstractFuelPropulsion):
             self.turboprop_geometry_calculation()
 
         self.alfa = alfa
-        self.alfa_p = alfa
+        self.alfa_p = alfa_p
         self.a41 = a41
         self.a45 = a45
         self.a8 = a8
@@ -175,6 +183,12 @@ class BasicTPEngine(AbstractFuelPropulsion):
         self.t4t_dp = t4t
         self.t45t_dp = t45t
         self.opr2_opr1_dp = opr2_opr1  # Compression ratio relationship between the second and first stages
+
+        cv_c, cp_c = self.air_coefficients_reader()
+        self.cv_c = cv_c
+        self.cp_c = cp_c
+
+        self.cabin_air_coefficients = self.air_renewal_coefficients
 
     @staticmethod
     def air_coefficients_reader():
@@ -245,7 +259,7 @@ class BasicTPEngine(AbstractFuelPropulsion):
         return coefficients_2_return
 
     @staticmethod
-    def air_renewal(coefficients_air, h, bleed_control="high"):
+    def air_renewal(coefficients_air, h, bleed_control):
         """
         Computes the airflow used for cabin air renewal
 
@@ -338,9 +352,9 @@ class BasicTPEngine(AbstractFuelPropulsion):
         """
         rg = 287
 
-        design_mach = self.design_mach
-        h0 = self.design_altitude
-        power = self.max_power
+        design_point_mach = self.design_point_mach
+        h0 = self.design_point_altitude
+        power = self.design_point_power
         global_opr = self.opr_d
         t41t = self.t41t_d
         exhaust_mach = self.exhaust_mach_design
@@ -355,8 +369,8 @@ class BasicTPEngine(AbstractFuelPropulsion):
         p0 = atmosphere_0.pressure
         t0 = atmosphere_0.temperature
 
-        p0t = p0 * (1 + (1.4 - 1) / 2 * design_mach ** 2) ** 3.5
-        t0t = t0 * (1 + (1.4 - 1) / 2 * design_mach ** 2)
+        p0t = p0 * (1 + (1.4 - 1) / 2 * design_point_mach ** 2) ** 3.5
+        t0t = t0 * (1 + (1.4 - 1) / 2 * design_point_mach ** 2)
 
         P2t = p0t * self.pi02
         T2t = t0t
@@ -422,7 +436,7 @@ class BasicTPEngine(AbstractFuelPropulsion):
         t8 = t5t / (1 + (gamma5 - 1) / 2 * exhaust_mach ** 2)
         v8 = exhaust_mach * np.sqrt(gamma5 * rg * t8)
 
-        exhaust_thrust = airflow_design * (1 + f - icb - g) * (v8 - design_mach * np.sqrt(t0 * 287 * 1.4))
+        exhaust_thrust = airflow_design * (1 + f - icb - g) * (v8 - design_point_mach * np.sqrt(t0 * 287 * 1.4))
 
         #
         power_check = (cp45 * t45t - cp5 * t5t) * airflow_design / 736 * (1 - g + f - icb) * self.gearbox_efficiency
@@ -448,38 +462,402 @@ class BasicTPEngine(AbstractFuelPropulsion):
 
         return alfa, alfa_p, a41, a45, a8, eta_compress, mc, t4t, t41t, t45t, opr2 / opr1
 
+    def turboshaft_performance_solver_RealGass(self,X,mc, P2t, T2t,m_air):
+        global T25t
+        global T3t
+        global T4t
+        global T41t
+        global T45t
+        global P3t
+        global P41t
+        global OPR
+        global M8
+        global P5t
+        global g
+        global f_fuel_ratio
+        global m
+        global OPR1
+        global OPR2
+        global P25t
+
+        T25t = X[0]
+        T3t = X[1]
+        T41t = X[2]
+        m = X[3]
+        P3t = X[4]
+        T45t = T41t * self.alfa
+
+        rg = 287
+        Cv_c = self.cv_c
+        Cp_c = self.cp_c
+        g = m_air / m
+
+        f_fuel_ratio = mc / m
+        icb = self.inter_compressor_bleed / m
+
+        Cp2, Cv2, gamma2 = self.compute_cp_cv_gamma(Cp_c, Cv_c, T2t)
+        f1_2, f2_2, Fgamma_2 = self.compute_gamma_functions(gamma2)
+        Cp25, Cv25, gamma25 = self.compute_cp_cv_gamma(Cp_c, Cv_c, T25t)
+        f1_25, f2_25, Fgamma_25 = self.compute_gamma_functions(gamma25)
+        Cp3, Cv3, gamma3 = self.compute_cp_cv_gamma(Cp_c, Cv_c, T3t)
+        f1_3, f2_3, Fgamma_3 = self.compute_gamma_functions(gamma3)
+        Cp41, Cv41, gamma41 = self.compute_cp_cv_gamma(Cp_c, Cv_c, T41t)
+        f1_41, f2_41, Fgamma_41 = self.compute_gamma_functions(gamma41)
+        Cp45, Cv45, gamma45 = self.compute_cp_cv_gamma(Cp_c, Cv_c, T45t)
+        f1_45, f2_45, Fgamma_45 = self.compute_gamma_functions(gamma45)
+
+        #
+
+        # OPR_check = (Cp2 / Cp3 / (1-icb) + eta_axe * (1 + f_fuel_ratio_OD - g_OD - icb) / (1 - icb) * (Cp41 - Cp45 * alfa) / Cp3 * T41t_OD / T2t \
+        #              - P_out / (Cp3 * m_OD * (1 - icb) * T2t) - T25t_OD / T2t * Cp25 / Cp3 * (1 / (1 - icb) - 1)) ** (f1_2 * eta_compres)
+
+        # OPR=P3t/P2t
+
+        # OPR1_OD = P25t / P2t
+        P25t = P2t * (T25t / T2t) ** (f1_2 * self.eta_225)
+        OPR2 = P3t / P25t
+        OPR1 = P25t / P2t
+        OPR = OPR1 * OPR2
+
+        T4t = (T41t * (1 + f_fuel_ratio - g - icb) - T3t * self.c) / (1 + f_fuel_ratio - g - self.c - icb)
+
+        Cp4, Cv4, gamma4 = self.compute_cp_cv_gamma(Cp_c, Cv_c, T4t)
+
+
+        P41t = P3t * self.picc
+        P45t = P41t * self.alfa_p
+
+        f = np.empty((5))
+        f[0] = (mc * self.etaqL - m * (1 + f_fuel_ratio - g - self.c - icb) * (Cp4 * T4t - Cp3 * T3t)) / 1e6
+        f[1] = (self.a41 - m * (1 + f_fuel_ratio - g - icb) * np.sqrt(T41t * rg) / P41t / Fgamma_41) * 1e3
+        f[2] = (P3t - P25t * (T3t / T25t) ** (f1_25 * self.eta_253)) / 1e5
+        # f[3] = (T3t - T2t*(P3t/P2t)**(f2_2/eta_compress))/1e3
+        f[3] = OPR2 / OPR1 - self.opr2_opr1_dp
+        f[4] = (T3t - \
+                (T2t * (Cp2 / Cp3 / (1 - icb) + self.eta_axe * (1 + f_fuel_ratio - g - icb) / (1 - icb) * (
+                        Cp41 - Cp45 * self.alfa) / Cp3 * T41t / T2t \
+                        - self.hp_shaft_power_out / (Cp3 * m * (1 - icb) * T2t) - T25t / T2t * Cp25 / Cp3 * (1 / (1 - icb) - 1)))) / 1e3
+
+        # f[4] = (m*(Cp25*T25t-Cp2*T2t)+m*(1-icb)*(Cp3*T3t-Cp25*T25t) + P_out - m*T41t*(1 + f_fuel_ratio - g - icb)*(Cp41-Cp45*alfa)*eta_axe)/1e5
+
+        # print("OPR=",OPR," T3t=", T3t)
+        # print(OPR,f)
+        # print(f)
+
+        return f
+
+    def Exhaust_Mach_Solver_RealGass(self,T5t, T45t, P45t, P0):
+        global M8
+        global P5t
+
+        Cv_c = self.cv_c
+        Cp_c = self.cp_c
+
+        Cp5, Cv5, gamma5 = self.compute_cp_cv_gamma(Cp_c, Cv_c, T5t)
+        f1_5, f2_5, Fgamma_5 = self.compute_gamma_functions(gamma5)
+        Cp45, Cv45, gamma45 = self.compute_cp_cv_gamma(Cp_c, Cv_c, T45t)
+        f1_45, f2_45, Fgamma_45 = self.compute_gamma_functions(gamma45)
+
+        M8 = Fgamma_5 * self.a45 / np.sqrt(gamma5) / self.a8 * (P45t / P0) ** ((gamma5 + 1) / 2 / gamma5)
+
+        P5t = P0 * (1 + (gamma5 - 1) / 2 * M8 ** 2) ** f1_5
+
+
+        function_minimize = T5t - T45t * (((P5t / P45t) ** (f2_45 * self.eta455)))
+
+        return function_minimize
+
+    def turboshaft_performance_RealGass(self, h, flight_mach, mc, show_info=False):
+        performance_atmospher=Atmosphere(h,altitude_in_feet=False)
+
+        P0 = performance_atmospher.pressure
+        T0 = performance_atmospher.temperature
+        m_air = self.air_renewal(self.cabin_air_coefficients,h,self.bleed_control)
+
+        rg = 287
+        Cv_c = self.cv_c
+        Cp_c = self.cp_c
+
+        P0t = P0 * (1 + (1.4 - 1) / 2 * flight_mach ** 2) ** 3.5
+        T0t = T0 * (1 + (1.4 - 1) / 2 * flight_mach ** 2)
+
+        P2t = P0t * self.pi02
+        T2t = T0t
+
+        global T25t
+        global T3t
+        global T4t
+        global T41t
+        global T45t
+        global P3t
+        global P41t
+        global OPR
+        global OPR1
+        global OPR2
+        global M8
+        global P5t
+        global g
+        global f_fuel_ratio
+        global m
+        global P25t
+        T25t = 0
+        T3t = 0
+        T4t = 0
+        T41t = 0
+        T45t = 0
+        P3t = 0
+        P41t = 0
+        OPR = 0
+        OPR1 = 0
+        OPR2 = 0
+        g = 0
+        f_fuel_ratio = 0
+        m = 0
+        P25t = 0
+        M8 = 0
+
+        # T25t = X[0]
+        # T3t = X[1]
+        # T41t = X[2]
+        # m = X[3]
+        # P3t = X[4]
+
+        initial_values = np.array([300, 500, 1200, 3, 400000])
+        fsolve(self.turboshaft_performance_solver_RealGass,initial_values,(mc, P2t, T2t, m_air), xtol=1e-8)
+
+        P45t = P41t * self.alfa_p
+        icb = self.inter_compressor_bleed / m
+
+        T5t0 = np.array([[900]])
+        z_minimize = fsolve(self.Exhaust_Mach_Solver_RealGass, T5t0, (T45t, P45t, P0))
+        T5t = z_minimize
+
+        Cp45, Cv45, gamma45 = self.compute_cp_cv_gamma(Cp_c, Cv_c, T45t)
+        Cp5, Cv5, gamma5 = self.compute_cp_cv_gamma(Cp_c, Cv_c, T5t)
+
+        Power = m * (1 - g + f_fuel_ratio - icb) * (Cp45 * T45t - Cp5 * T5t) * self.gearbox_efficiency
+
+        Power_in_cv = Power / 736
+
+        T8 = T5t / (1 + (gamma5 - 1) / 2 * M8 ** 2)
+        V8 = M8 * np.sqrt(gamma5 * rg * T8)
+
+        Exhaust_Thrust = m * (1 + f_fuel_ratio - icb - g) * (V8 - flight_mach * np.sqrt(T0 * 287 * 1.4))
+
+        global Mach_sol
+        global h_sol
+        global T2t_sol
+        global T25t_sol
+        global T3t_sol
+        global T4t_sol
+        global T41t_sol
+        global T45t_sol
+        global P2t_sol
+        global P25t_sol
+        global P3t_sol
+        global P4t_sol
+        global P41t_sol
+        global P45t_sol
+        global OPR1_sol
+        global OPR2_sol
+        global OPR_sol
+        global Power_sol
+        global Thrust_sol
+        global m_sol
+
+        Mach_sol = flight_mach
+        P2t_sol = P2t
+        P3t_sol = P3t
+        P4t_sol = P41t
+        P41t_sol = P41t
+        P45t_sol = P45t
+        T2t_sol = T2t
+        T25t_sol = T25t
+        T3t_sol = T3t
+        T41t_sol = T41t
+        T4t_sol = T4t
+        T45t_sol = T45t
+        OPR1_sol = OPR1
+        OPR2_sol = OPR2
+        OPR_sol = OPR
+        Power_sol = Power_in_cv
+        Thrust_sol = Exhaust_Thrust
+        m_sol = m
+
+        if show_info == True:
+            print("PERFORMANCE")
+            print("M0=", flight_mach, "h=", h)
+            print("->T2t=", round(T2t), "T25t=", round(T25t), "T3t=", round(T3t), "T4t=", round(T4t),
+                  "T41t=", round(T41t), "T45t=", round(T45t))
+            print("->P2t=", round(P2t), "P25t=", round(P25t), "P3t=", round(P3t), "P4t=", round(P41t), "P41t=",
+                  round(P41t), "P45t=", round(P45t))
+            print("OPR1=", round(OPR1, 2), "OPR2=", round(OPR2, 2), "OPR=", round(OPR, 2), "Power =",
+                  round(Power_in_cv[0]),
+                  "Exhaust Thrust=", round(Exhaust_Thrust[0]))
+            print("m=", round(m, 3), "bleed=", round(m_air, 3), " mc=", round(mc, 4))
+            print("#################################################################################################")
+
+        return T4t, m, Power_in_cv, f_fuel_ratio, P41t, OPR, T41t, T45t, m
 
 
 
+    # def turboshaft_performance_envelope_solver_RealGas(fuel_flow, LimitName, LimitValue, h, M0, dessign_params, m_air,
+    #                                                    eff_params, Cv_c, Cp_c):
+    #     mc = fuel_flow[0]
+    #
+    #     global Mach_sol
+    #     global h_sol
+    #     global T2t_sol
+    #     global T25t_sol
+    #     global T3t_sol
+    #     global T4t_sol
+    #     global T41t_sol
+    #     global T45t_sol
+    #     global P2t_sol
+    #     global P25t_sol
+    #     global P3t_sol
+    #     global P4t_sol
+    #     global P41t_sol
+    #     global P45t_sol
+    #     global OPR1_sol
+    #     global OPR2_sol
+    #     global OPR_sol
+    #     global Power_sol
+    #     global Thrust_sol
+    #     global m_sol
+    #
+    #     if LimitName == "OPR":
+    #         T4t, m, Power_in_cv, f_fuel_ratio, P41t, OPR, T41t, T45t, m = \
+    #             turboshaft_performance_RealGass(h, M0, dessign_params, m_air, mc, eff_params, Cv_c, Cp_c)
+    #         var_2_return = OPR
+    #         print("Convergence OPR...", Power_in_cv, round(T45t), round(OPR, 2))
+    #
+    #     elif LimitName == "T45t":
+    #         T4t, m, Power_in_cv, f_fuel_ratio, P41t, OPR, T41t, T45t, m = \
+    #             turboshaft_performance_RealGass(h, M0, dessign_params, m_air, mc, eff_params, Cv_c, Cp_c)
+    #         var_2_return = T45t
+    #         print("Convergence T45t...", Power_in_cv, round(T45t), round(OPR, 2))
+    #
+    #     elif LimitName == "Power":
+    #         T4t, m, Power_in_cv, f_fuel_ratio, P41t, OPR, T41t, T45t, m = \
+    #             turboshaft_performance_RealGass(h, M0, dessign_params, m_air, mc, eff_params, Cv_c, Cp_c)
+    #         var_2_return = Power_in_cv
+    #         print("Convergence Power...", Power_in_cv, round(T45t), round(OPR, 2))
+    #
+    #     f_value = var_2_return - LimitValue
+    #
+    #     return f_value
+    #
+    # def turboshaft_performance_envelope_limits_RealGas(LimitName, LimitValue, h, M0, dessign_params, m_air, eff_params,
+    #                                                    Cv_c, Cp_c):
+    #     global Mach_sol
+    #     global h_sol
+    #     global T2t_sol
+    #     global T25t_sol
+    #     global T3t_sol
+    #     global T4t_sol
+    #     global T41t_sol
+    #     global T45t_sol
+    #     global P2t_sol
+    #     global P25t_sol
+    #     global P3t_sol
+    #     global P4t_sol
+    #     global P41t_sol
+    #     global P45t_sol
+    #     global OPR1_sol
+    #     global OPR2_sol
+    #     global OPR_sol
+    #     global Power_sol
+    #     global Thrust_sol
+    #     global m_sol
+    #
+    #     fuel_flow_0 = np.array([0.046 * (1 - h / 29000)])
+    #
+    #     z = fsolve(turboshaft_performance_envelope_solver_RealGas, fuel_flow_0,
+    #                (LimitName, LimitValue, h, M0, dessign_params, m_air, eff_params, Cv_c, Cp_c))
+    #     fuel_flow = z[0]
+    #
+    #     return fuel_flow
+    #
+    # def turboshaft_compute_within_limits(Target_Power, T45t_max, OPR_max, h, M, dessign_params, m_air, Cv_c, Cp_c,
+    #                                      eff_params):
+    #     global Mach_sol
+    #     global h_sol
+    #     global T2t_sol
+    #     global T25t_sol
+    #     global T3t_sol
+    #     global T4t_sol
+    #     global T41t_sol
+    #     global T45t_sol
+    #     global P2t_sol
+    #     global P25t_sol
+    #     global P3t_sol
+    #     global P4t_sol
+    #     global P41t_sol
+    #     global P45t_sol
+    #     global OPR1_sol
+    #     global OPR2_sol
+    #     global OPR_sol
+    #     global Power_sol
+    #     global Thrust_sol
+    #     global m_sol
+    #
+    #     print("New Altitude")
+    #     fuel = turboshaft_performance_envelope_limits_RealGas("Power", Target_Power, h, M, dessign_params, m_air,
+    #                                                           eff_params, Cv_c, Cp_c)
+    #     # T4t, m, Power_in_cv, f_fuel_ratio, P41t, OPR, T41t, T45t, m = turboshaft_performance_RealGass(h, M, dessign_params, m_air, fuel, eff_params,Cv_c, Cp_c)
+    #
+    #     if T45t_sol > T45t_max:
+    #         fuel = turboshaft_performance_envelope_limits_RealGas("T45t", T45t_max, h, M, dessign_params, m_air,
+    #                                                               eff_params, Cv_c, Cp_c)
+    #         print("T45t limit processing", T45t_sol)
+    #
+    #     if OPR_sol > OPR_max:
+    #         fuel = turboshaft_performance_envelope_limits_RealGas("OPR", OPR_max, h, M, dessign_params, m_air,
+    #                                                               eff_params, Cv_c, Cp_c)
+    #         print("OPR limit processing", OPR_sol)
+    #
+    #     print("PERFORMANCE WITHIN LIMITS")
+    #     print("M0=", M, "h=", h)
+    #     print("->T2t=", round(T2t_sol), "T25t=", round(T25t_sol), "T3t=", round(T3t_sol), "T4t=",
+    #           round(T4t_sol), "T41t=", round(T41t_sol), "T45t=", round(T45t_sol))
+    #     print("->P2t=", round(P2t_sol), "P25t=", round(P25t), "P3t=", round(P3t_sol), "P4t=", round(P41t_sol),
+    #           "P41t=", round(P41t_sol), "P45t=", round(P45t_sol))
+    #     print("OPR1=", round(OPR1_sol, 2), "OPR2=", round(OPR2_sol, 2), "OPR=", round(OPR_sol, 2), "Power =",
+    #           round(Power_sol[0]),
+    #           "Exhaust Thrust=", round(Thrust_sol[0]))
+    #     print("m=", round(m_sol, 3), " mc=", round(fuel, 4))
+    #     print("#################################################################################################")
+    #     return T4t_sol, m_sol, Power_sol, fuel / m_sol, P41t_sol, OPR_sol, T41t_sol, T45t_sol, m_sol
 
-    @staticmethod
-    def read_map(map_file_path):
-
-        data = pd.read_csv(map_file_path)
-        values = data.to_numpy()[:, 1:].tolist()
-        labels = data.to_numpy()[:, 0].tolist()
-        data = pd.DataFrame(values, index=labels)
-        rpm = data.loc["rpm", 0][1:-2].replace("\n", "").replace("\r", "")
-        for idx in range(10):
-            rpm = rpm.replace("  ", " ")
-        rpm_vect = np.array([float(i) for i in rpm.split(" ") if i != ""])
-        pme = data.loc["pme", 0][1:-2].replace("\n", "").replace("\r", "")
-        for idx in range(10):
-            pme = pme.replace("  ", " ")
-        pme_vect = np.array([float(i) for i in pme.split(" ") if i != ""])
-        pme_limit = data.loc["pme_limit", 0][1:-2].replace("\n", "").replace("\r", "")
-        for idx in range(10):
-            pme_limit = pme_limit.replace("  ", " ")
-        pme_limit_vect = np.array([float(i) for i in pme_limit.split(" ") if i != ""])
-        sfc = data.loc["sfc", 0][1:-2].replace("\n", "").replace("\r", "")
-        sfc_lines = sfc[1:-2].split("] [")
-        sfc_matrix = np.zeros(
-            (len(np.array([i for i in sfc_lines[0].split(" ") if i != ""])), len(sfc_lines))
-        )
-        for idx in range(len(sfc_lines)):
-            sfc_matrix[:, idx] = np.array([i for i in sfc_lines[idx].split(" ") if i != ""])
-
-        return rpm_vect, pme_vect, pme_limit_vect, sfc_matrix
+    # @staticmethod
+    # def read_map(map_file_path):
+    #
+    #     data = pd.read_csv(map_file_path)
+    #     values = data.to_numpy()[:, 1:].tolist()
+    #     labels = data.to_numpy()[:, 0].tolist()
+    #     data = pd.DataFrame(values, index=labels)
+    #     rpm = data.loc["rpm", 0][1:-2].replace("\n", "").replace("\r", "")
+    #     for idx in range(10):
+    #         rpm = rpm.replace("  ", " ")
+    #     rpm_vect = np.array([float(i) for i in rpm.split(" ") if i != ""])
+    #     pme = data.loc["pme", 0][1:-2].replace("\n", "").replace("\r", "")
+    #     for idx in range(10):
+    #         pme = pme.replace("  ", " ")
+    #     pme_vect = np.array([float(i) for i in pme.split(" ") if i != ""])
+    #     pme_limit = data.loc["pme_limit", 0][1:-2].replace("\n", "").replace("\r", "")
+    #     for idx in range(10):
+    #         pme_limit = pme_limit.replace("  ", " ")
+    #     pme_limit_vect = np.array([float(i) for i in pme_limit.split(" ") if i != ""])
+    #     sfc = data.loc["sfc", 0][1:-2].replace("\n", "").replace("\r", "")
+    #     sfc_lines = sfc[1:-2].split("] [")
+    #     sfc_matrix = np.zeros(
+    #         (len(np.array([i for i in sfc_lines[0].split(" ") if i != ""])), len(sfc_lines))
+    #     )
+    #     for idx in range(len(sfc_lines)):
+    #         sfc_matrix[:, idx] = np.array([i for i in sfc_lines[idx].split(" ") if i != ""])
+    #
+    #     return rpm_vect, pme_vect, pme_limit_vect, sfc_matrix
 
     def compute_flight_points(self, flight_points: FlightPoint):
         # pylint: disable=too-many-arguments  # they define the trajectory
@@ -754,9 +1132,10 @@ class BasicTPEngine(AbstractFuelPropulsion):
 
         atmosphere = Atmosphere(np.asarray(flight_points.altitude), altitude_in_feet=False)
         sigma = atmosphere.density / Atmosphere(0.0).density
-        max_power = (self.max_power / 1e3) * (sigma - (1 - sigma) / 7.55)  # max power in kW
+        max_power = (self.design_point_power / 1e3) * (sigma - (1 - sigma) / 7.55)  # max power in kW
 
         return max_power
+
 
     def sfc(
             self,
@@ -774,9 +1153,10 @@ class BasicTPEngine(AbstractFuelPropulsion):
         """
 
         # Load engine map and save interpolation formula
-        rpm_vect, pme_vect, _, sfc_matrix = self.read_map(self.map_file_path)
-        torque_vect = pme_vect * 1e5 * self.volume / (8.0 * np.pi)
-        ICE_sfc = interp2d(torque_vect, rpm_vect, sfc_matrix, kind="cubic")
+
+        # rpm_vect, pme_vect, _, sfc_matrix = self.read_map(self.map_file_path)
+        # torque_vect = pme_vect * 1e5 * self.volume / (8.0 * np.pi)
+        # ICE_sfc = interp2d(torque_vect, rpm_vect, sfc_matrix, kind="cubic")
 
         # Define RPM & mixture using engine settings
         if np.size(engine_setting) == 1:
@@ -796,10 +1176,10 @@ class BasicTPEngine(AbstractFuelPropulsion):
         sfc = np.zeros(np.size(thrust))
         if np.size(thrust) == 1:
             real_power = (
-                    thrust * atmosphere.true_airspeed / self.propeller_efficiency(thrust, atmosphere)
+                thrust * atmosphere.true_airspeed / self.propeller_efficiency(thrust, atmosphere)
             )
-            torque = real_power / (rpm_values * np.pi / 30.0)
-            sfc = ICE_sfc(torque, rpm_values) * mixture_values
+
+            sfc = 6969
         else:
             for idx in range(np.size(thrust)):
                 local_atmosphere = Atmosphere(
@@ -807,13 +1187,14 @@ class BasicTPEngine(AbstractFuelPropulsion):
                 )
                 local_atmosphere.mach = atmosphere.mach[idx]
                 real_power[idx] = (
-                        thrust[idx]
-                        * atmosphere.true_airspeed[idx]
-                        / self.propeller_efficiency(thrust[idx], local_atmosphere)
+                    thrust[idx]
+                    * atmosphere.true_airspeed[idx]
+                    / self.propeller_efficiency(thrust[idx], local_atmosphere)
                 )
-                torque[idx] = real_power[idx] / (rpm_values[idx] * np.pi / 30.0)
-                sfc = ICE_sfc(torque[idx], rpm_values[idx]) * mixture_values[idx]
+
+                sfc[idx] = 6969*np.ones(np.size(thrust))
         return sfc, real_power
+
 
     def max_thrust(
             self, engine_setting: Union[float, Sequence[float]], atmosphere: Atmosphere,
@@ -846,19 +1227,25 @@ class BasicTPEngine(AbstractFuelPropulsion):
         )
 
         # Calculate engine max power @ given RPM & altitude
-        rpm_vect, _, pme_limit_vect, _ = self.read_map(self.map_file_path)
-        torque_vect = pme_limit_vect * 1e5 * self.volume / (8.0 * np.pi)
-        power_max_vect = torque_vect * rpm_vect * (np.pi / 30.0)
+
+        # rpm_vect, _, pme_limit_vect, _ = self.read_map(self.map_file_path)
+        # torque_vect = pme_limit_vect * 1e5 * self.volume / (8.0 * np.pi)
+        # power_max_vect = torque_vect * rpm_vect * (np.pi / 30.0)
         if np.size(engine_setting) == 1:
-            rpm_values = np.array(self.rpm_values[int(engine_setting)])
-            max_power_SL = np.interp(rpm_values, rpm_vect, power_max_vect)
+            # rpm_values = np.array(self.rpm_values[int(engine_setting)])
+            # max_power_SL = np.interp(rpm_values, rpm_vect, power_max_vect)
+            max_power=130000
         else:
-            rpm_values = np.array(
-                [self.rpm_values[engine_setting[idx]] for idx in range(np.size(engine_setting))]
-            )
-            max_power_SL = np.interp(list(rpm_values), rpm_vect, power_max_vect)
-        sigma = atmosphere.density / Atmosphere(0.0).density
-        max_power = max_power_SL * (sigma - (1 - sigma) / 7.55)
+            # rpm_values = np.array(
+            #     [self.rpm_values[engine_setting[idx]] for idx in range(np.size(engine_setting))]
+            # )
+            # max_power_SL = np.interp(list(rpm_values), rpm_vect, power_max_vect)
+            max_power=120000*np.ones(np.size(engine_setting))
+
+        # !!!!!!!!!!! NO LONGER USED !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+        # sigma = atmosphere.density / Atmosphere(0.0).density
+        # max_power = max_power_SL * (sigma - (1 - sigma) / 7.55)
+        # !!!!!!!!!!! NO LONGER USED !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
         # Found thrust relative to ICE maximum power @ given altitude and speed:
         # calculates first thrust interpolation vector (between min and max of propeller table) and associated
@@ -938,7 +1325,7 @@ class BasicTPEngine(AbstractFuelPropulsion):
 
         """
 
-        power_sl = self.max_power / 745.7  # conversion to european hp
+        power_sl = self.design_point_power / 745.7  # conversion to european hp
         uninstalled_weight = (power_sl - 21.55) / 0.5515
         self.engine.mass = uninstalled_weight
 
@@ -952,13 +1339,13 @@ class BasicTPEngine(AbstractFuelPropulsion):
         """
 
         # Compute engine dimensions
-        self.engine.length = self.ref["length"] * (self.max_power / self.ref["max_power"]) ** (
+        self.engine.length = self.ref["length"] * (self.design_point_power / self.ref["max_power"]) ** (
                 1 / 3
         )
-        self.engine.height = self.ref["height"] * (self.max_power / self.ref["max_power"]) ** (
+        self.engine.height = self.ref["height"] * (self.design_point_power / self.ref["max_power"]) ** (
                 1 / 3
         )
-        self.engine.width = self.ref["width"] * (self.max_power / self.ref["max_power"]) ** (1 / 3)
+        self.engine.width = self.ref["width"] * (self.design_point_power / self.ref["max_power"]) ** (1 / 3)
 
         if self.prop_layout == 3.0:
             nacelle_length = 1.15 * self.engine.length

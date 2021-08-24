@@ -33,15 +33,13 @@ class ComputeGroundCGCase(ExplicitComponent):
     """ Center of gravity estimation for all load cases on ground"""
 
     def setup(self):
-        self.add_input("data:geometry:cabin:luggage:mass_max_front", val=np.nan, units="kg")
-        self.add_input("data:geometry:cabin:luggage:mass_max_rear", val=np.nan, units="kg")
+        self.add_input("data:geometry:cabin:luggage:mass_max", val=np.nan, units="kg")
         self.add_input("data:geometry:wing:MAC:length", val=np.nan, units="m")
         self.add_input("data:geometry:wing:MAC:at25percent:x", val=np.nan, units="m")
         self.add_input("data:geometry:fuselage:front_length", val=np.nan, units="m")
         self.add_input("data:geometry:cabin:seats:pilot:length", val=np.nan, units="m")
         self.add_input("data:weight:furniture:passenger_seats:CG:x", val=np.nan, units="m")
         self.add_input("data:weight:payload:rear_fret:CG:x", val=np.nan, units="m")
-        self.add_input("data:weight:payload:front_fret:CG:x", val=np.nan, units="m")
         self.add_input("data:weight:aircraft_empty:CG:x", val=np.nan, units="m")
         self.add_input("data:weight:aircraft_empty:mass", val=np.nan, units="kg")
         self.add_input("data:weight:propulsion:unusable_fuel:mass", val=np.nan, units="kg")
@@ -51,15 +49,13 @@ class ComputeGroundCGCase(ExplicitComponent):
         self.add_output("data:weight:aircraft:CG:ground_condition:min:MAC_position")
 
     def compute(self, inputs, outputs, discrete_inputs=None, discrete_outputs=None):
-        luggage_mass_max_front = float(inputs["data:geometry:cabin:luggage:mass_max_front"])
-        luggage_mass_max_rear = float(inputs["data:geometry:cabin:luggage:mass_max_rear"])
+        luggage_mass_max = float(inputs["data:geometry:cabin:luggage:mass_max"])
         l0_wing = inputs["data:geometry:wing:MAC:length"]
         fa_length = inputs["data:geometry:wing:MAC:at25percent:x"]
         cg_pax = inputs["data:weight:furniture:passenger_seats:CG:x"]
         lav = inputs["data:geometry:fuselage:front_length"]
         l_pilot_seat = inputs["data:geometry:cabin:seats:pilot:length"]
         cg_rear_fret = inputs["data:weight:payload:rear_fret:CG:x"]
-        cg_front_fret = inputs["data:weight:payload:front_fret:CG:x"]
         x_cg_plane_aft = inputs["data:weight:aircraft_empty:CG:x"]
         m_empty = inputs["data:weight:aircraft_empty:mass"]
         m_unusable_fuel = inputs["data:weight:propulsion:unusable_fuel:mass"]
@@ -75,28 +71,24 @@ class ComputeGroundCGCase(ExplicitComponent):
         m_pax_array = np.zeros(1)
         m_pilot_array = np.array([0.0, 2.0 * m_pilot])  # Without the pilots and with the 2 pilots
         m_fuel_array = np.array([m_unusable_fuel])
-        m_lug_front_array = np.array([0.0, luggage_mass_max_front])
-        m_lug_rear_array = np.array([0.0, luggage_mass_max_rear])
+        m_lug_array = np.array([0.0, luggage_mass_max])
 
-        for m_lug_front in m_lug_front_array:
+        for m_lug in m_lug_array:
 
-            for m_lug_rear in m_lug_rear_array:
+            for m_fuel in m_fuel_array:
 
-                for m_fuel in m_fuel_array:
+                for m_pilot in m_pilot_array:
 
-                    for m_pilot in m_pilot_array:
-
-                        for m_pax in m_pax_array:
-                            mass = m_pax + m_pilot + m_fuel + m_lug_front + m_lug_rear + m_empty
-                            cg = (
-                                m_empty * x_cg_plane_aft
-                                + m_pax * cg_pax
-                                + m_pilot * cg_pilot
-                                + m_fuel * cg_tank
-                                + m_lug_front * cg_front_fret
-                                + m_lug_rear * cg_rear_fret
-                            ) / mass
-                            cg_list.append(cg)
+                    for m_pax in m_pax_array:
+                        mass = m_pax + m_pilot + m_fuel + m_lug + m_empty
+                        cg = (
+                            m_empty * x_cg_plane_aft
+                            + m_pax * cg_pax
+                            + m_pilot * cg_pilot
+                            + m_fuel * cg_tank
+                            + m_lug * cg_rear_fret
+                        ) / mass
+                        cg_list.append(cg)
 
         cg_fwd = min(cg_list)
         cg_aft = max(cg_list)
@@ -121,9 +113,8 @@ class ComputeFlightCGCase(ExplicitComponent):
         self._engine_wrapper = BundleLoader().instantiate_component(self.options["propulsion_id"])
         self._engine_wrapper.setup(self)
 
-        self.add_input("data:geometry:cabin:luggage:mass_max_front", val=np.nan, units="kg")
-        self.add_input("data:geometry:cabin:luggage:mass_max_rear", val=np.nan, units="kg")
-        self.add_input("data:geometry:wing:area", val=np.nan, units="ft**2")
+        self.add_input("data:geometry:cabin:luggage:mass_max", val=np.nan, units="kg")
+        self.add_input("data:geometry:wing:area", val=np.nan, units="m**2")
         self.add_input("data:aerodynamics:aircraft:cruise:CD0", val=np.nan)
         self.add_input("data:aerodynamics:wing:cruise:induced_drag_coefficient", val=np.nan)
         self.add_input("data:geometry:propulsion:count", val=np.nan)
@@ -136,7 +127,6 @@ class ComputeFlightCGCase(ExplicitComponent):
         self.add_input("data:geometry:cabin:seats:passenger:count_by_row", val=np.nan)
         self.add_input("data:geometry:cabin:seats:passenger:length", val=np.nan, units="m")
         self.add_input("data:weight:payload:rear_fret:CG:x", val=np.nan, units="m")
-        self.add_input("data:weight:payload:front_fret:CG:x", val=np.nan, units="m")
         self.add_input("data:weight:aircraft_empty:CG:x", val=np.nan, units="m")
         self.add_input("data:weight:aircraft:MTOW", val=np.nan, units="kg")
         self.add_input("data:weight:aircraft_empty:mass", val=np.nan, units="kg")
@@ -148,8 +138,7 @@ class ComputeFlightCGCase(ExplicitComponent):
         self.add_output("data:weight:aircraft:CG:flight_condition:min:MAC_position")
 
     def compute(self, inputs, outputs, discrete_inputs=None, discrete_outputs=None):
-        luggage_mass_max_front = float(inputs["data:geometry:cabin:luggage:mass_max_front"])
-        luggage_mass_max_rear = float(inputs["data:geometry:cabin:luggage:mass_max_rear"])
+        luggage_mass_max = float(inputs["data:geometry:cabin:luggage:mass_max"])
         n_pax_max = inputs["data:geometry:cabin:seats:passenger:NPAX_max"]
         l0_wing = inputs["data:geometry:wing:MAC:length"]
         fa_length = inputs["data:geometry:wing:MAC:at25percent:x"]
@@ -159,7 +148,6 @@ class ComputeFlightCGCase(ExplicitComponent):
         count_by_row = inputs["data:geometry:cabin:seats:passenger:count_by_row"]
         l_pass_seat = inputs["data:geometry:cabin:seats:passenger:length"]
         cg_rear_fret = inputs["data:weight:payload:rear_fret:CG:x"]
-        cg_front_fret = inputs["data:weight:payload:front_fret:CG:x"]
         x_cg_plane_aft = inputs["data:weight:aircraft_empty:CG:x"]
         m_empty = inputs["data:weight:aircraft_empty:mass"]
         m_unusable_fuel = inputs["data:weight:propulsion:unusable_fuel:mass"]
@@ -178,8 +166,7 @@ class ComputeFlightCGCase(ExplicitComponent):
 
         m_fuel_array = np.array([m_fuel_min, mfw])
 
-        m_lug_front_array = np.array([0.0, luggage_mass_max_front])
-        m_lug_rear_array = np.array([0.0, luggage_mass_max_rear])
+        m_lug_array = np.array([0.0, luggage_mass_max])
 
         cg_list = []
 
@@ -187,56 +174,46 @@ class ComputeFlightCGCase(ExplicitComponent):
 
             for m_fuel in m_fuel_array:
 
-                for m_lug_front in m_lug_front_array:
+                for m_lug in m_lug_array:
 
-                    for m_lug_rear in m_lug_rear_array:
+                    for n_pax in n_pax_array:
 
-                        for n_pax in n_pax_array:
+                        n_row = np.ceil(n_pax / count_by_row)
 
-                            n_row = np.ceil(n_pax / count_by_row)
+                        x_cg_pax_fwd = 0.0
+                        for idx in range(int(n_row)):
+                            row_cg = (idx + 0.5) * l_pass_seat
+                            nb_pers = min(count_by_row, n_pax_max - idx * count_by_row)
+                            x_cg_pax_fwd += row_cg * nb_pers / n_pax_max
 
-                            x_cg_pax_fwd = 0.0
-                            for idx in range(int(n_row)):
-                                row_cg = (idx + 0.5) * l_pass_seat
-                                nb_pers = min(count_by_row, n_pax_max - idx * count_by_row)
-                                x_cg_pax_fwd += row_cg * nb_pers / n_pax_max
+                        x_cg_pax_aft = 0.0
+                        for idx in range(int(n_row)):
+                            row_cg = l_pax - l_pilot_seat - (idx + 0.5) * l_pass_seat
+                            nb_pers = min(count_by_row, n_pax_max - idx * count_by_row)
+                            x_cg_pax_aft += row_cg * nb_pers / n_pax_max
 
-                            x_cg_pax_aft = 0.0
-                            for idx in range(int(n_row)):
-                                row_cg = l_pax - l_pilot_seat - (idx + 0.5) * l_pass_seat
-                                nb_pers = min(count_by_row, n_pax_max - idx * count_by_row)
-                                x_cg_pax_aft += row_cg * nb_pers / n_pax_max
+                        cg_pax_array = np.array(
+                            [
+                                lav + l_instr + l_pilot_seat + x_cg_pax_fwd,
+                                lav + l_instr + l_pilot_seat + x_cg_pax_aft,
+                            ]
+                        )
 
-                            cg_pax_array = np.array(
-                                [
-                                    lav + l_instr + l_pilot_seat + x_cg_pax_fwd,
-                                    lav + l_instr + l_pilot_seat + x_cg_pax_aft,
-                                ]
-                            )
+                        for cg_pax in cg_pax_array:
 
-                            for cg_pax in cg_pax_array:
+                            m_pax_array = np.array([n_pax * 80.0, n_pax * 90.0])
 
-                                m_pax_array = np.array([n_pax * 80.0, n_pax * 90.0])
+                            for m_pax in m_pax_array:
 
-                                for m_pax in m_pax_array:
-
-                                    mass = (
-                                        m_pax
-                                        + m_pilot
-                                        + m_fuel
-                                        + m_lug_front
-                                        + m_lug_rear
-                                        + m_empty
-                                    )
-                                    cg = (
-                                        m_empty * x_cg_plane_aft
-                                        + m_pax * cg_pax
-                                        + m_pilot * cg_pilot
-                                        + m_fuel * cg_tank
-                                        + m_lug_front * cg_front_fret
-                                        + m_lug_rear * cg_rear_fret
-                                    ) / mass
-                                    cg_list.append(cg)
+                                mass = m_pax + m_pilot + m_fuel + m_lug + m_empty
+                                cg = (
+                                    m_empty * x_cg_plane_aft
+                                    + m_pax * cg_pax
+                                    + m_pilot * cg_pilot
+                                    + m_fuel * cg_tank
+                                    + m_lug * cg_rear_fret
+                                ) / mass
+                                cg_list.append(cg)
 
         cg_aft = max(cg_list)
         cg_fwd = min(cg_list)
@@ -284,7 +261,7 @@ class ComputeFlightCGCase(ExplicitComponent):
         propulsion_model = FuelEngineSet(
             self._engine_wrapper.get_model(inputs), inputs["data:geometry:propulsion:count"]
         )
-        wing_area = inputs["data:geometry:wing:area"] * 0.0929
+        wing_area = inputs["data:geometry:wing:area"]
         cd0 = inputs["data:aerodynamics:aircraft:cruise:CD0"]
         coef_k = inputs["data:aerodynamics:wing:cruise:induced_drag_coefficient"]
 

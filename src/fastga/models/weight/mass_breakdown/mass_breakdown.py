@@ -16,26 +16,27 @@ Main components for mass breakdown
 
 import openmdao.api as om
 
-from .a_airframe import (
+from fastga.models.weight.mass_breakdown.a_airframe import (
     ComputeWingWeight,
     ComputeFuselageWeight,
+    ComputeFuselageWeightRaymer,
     ComputeTailWeight,
     ComputeFlightControlsWeight,
     ComputeLandingGearWeight,
 )
-from .b_propulsion import (
+from fastga.models.weight.mass_breakdown.b_propulsion import (
     ComputeEngineWeight,
     ComputeFuelLinesWeight,
     ComputeUnusableFuelWeight,
 )
-from .c_systems import (
+from fastga.models.weight.mass_breakdown.c_systems import (
     ComputePowerSystemsWeight,
     ComputeLifeSupportSystemsWeight,
     ComputeNavigationSystemsWeight,
 )
-from .d_furniture import ComputePassengerSeatsWeight
-from .payload import ComputePayload
-from .update_mlw_and_mzfw import UpdateMLWandMZFW
+from fastga.models.weight.mass_breakdown.d_furniture import ComputePassengerSeatsWeight
+from fastga.models.weight.mass_breakdown.payload import ComputePayload
+from fastga.models.weight.mass_breakdown.update_mlw_and_mzfw import UpdateMLWandMZFW
 
 from fastga.models.options import PAYLOAD_FROM_NPAX
 
@@ -97,11 +98,8 @@ class ComputeOperatingWeightEmpty(om.Group):
     def setup(self):
         # Airframe
         self.add_subsystem("wing_weight", ComputeWingWeight(), promotes=["*"])
-        self.add_subsystem(
-            "fuselage_weight",
-            ComputeFuselageWeight(propulsion_id=self.options["propulsion_id"]),
-            promotes=["*"],
-        )
+        self.add_subsystem("fuselage_weight", ComputeFuselageWeight(), promotes=["*"])
+        self.add_subsystem("fuselage_weight_raymer", ComputeFuselageWeightRaymer(), promotes=["*"])
         self.add_subsystem("empennage_weight", ComputeTailWeight(), promotes=["*"])
         self.add_subsystem("flight_controls_weight", ComputeFlightControlsWeight(), promotes=["*"])
         self.add_subsystem("landing_gear_weight", ComputeLandingGearWeight(), promotes=["*"])
@@ -148,12 +146,7 @@ class ComputeOperatingWeightEmpty(om.Group):
         propulsion_sum = om.AddSubtractComp()
         propulsion_sum.add_equation(
             "data:weight:propulsion:mass",
-            [
-                "data:weight:propulsion:engine:mass",
-                "data:weight:propulsion:fuel_lines:mass",
-                "data:weight:propulsion:tank:mass",
-                "data:weight:propulsion:unusable_fuel:mass",
-            ],
+            ["data:weight:propulsion:engine:mass", "data:weight:propulsion:fuel_lines:mass",],
             units="kg",
             desc="Mass of the propulsion system",
         )

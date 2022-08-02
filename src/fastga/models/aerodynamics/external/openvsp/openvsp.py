@@ -16,6 +16,7 @@ import math
 import os
 import os.path as pth
 import warnings
+import logging
 from importlib.resources import path
 
 import numpy as np
@@ -44,6 +45,8 @@ INPUT_AIRCRAFT_SCRIPT = "wing_ht_openvsp.vspscript"
 STDERR_FILE_NAME = "vspaero_calc.err"
 VSPSCRIPT_EXE_NAME = "vspscript.exe"
 VSPAERO_EXE_NAME = "vspaero.exe"
+
+_LOGGER = logging.getLogger()
 
 
 class OPENVSPSimpleGeometry(ExternalCodeComp):
@@ -397,8 +400,17 @@ class OPENVSPSimpleGeometry(ExternalCodeComp):
         copy_resource_folder(openvsp3201, target_directory)
         # noinspection PyTypeChecker
         copy_resource(resources, self.options["wing_airfoil_file"], target_directory)
-        # Create corresponding .bat files (one for each geometry configuration)
-        self.options["command"] = [pth.join(target_directory, "vspscript.bat")]
+
+        if os.name == "nt":
+            # Create corresponding .bat files (one for each geometry configuration)
+            self.options["command"] = [pth.join(target_directory, "vspscript.bat")]
+        elif os.name == "posix":
+            # Create corresponding .sh files (one for each geometry configuration)
+            self.options["command"] = [pth.join(target_directory, "vspscript.sh")]
+        else:
+            _LOGGER.warning("OS not recognized, using Windows-format batch file")
+            self.options["command"] = [pth.join(target_directory, "vspscript.bat")]
+
         batch_file = open(self.options["command"][0], "w+")
         batch_file.write("@echo off\n")
         command = (
@@ -465,7 +477,15 @@ class OPENVSPSimpleGeometry(ExternalCodeComp):
         ]
         self.options["external_input_files"] = input_file_list
         self.options["external_output_files"] = output_file_list
-        self.options["command"] = [pth.join(target_directory, "vspaero.bat")]
+        if os.name == "nt":
+            # Create corresponding .bat files (one for each geometry configuration)
+            self.options["command"] = [pth.join(target_directory, "vspaero.bat")]
+        elif os.name == "posix":
+            # Create corresponding .sh files (one for each geometry configuration)
+            self.options["command"] = [pth.join(target_directory, "vspaero.sh")]
+        else:
+            _LOGGER.warning("OS not recognized, using Windows-format batch file")
+            self.options["command"] = [pth.join(target_directory, "vspaero.bat")]
         batch_file = open(self.options["command"][0], "w+")
         batch_file.write("@echo off\n")
         command = (
@@ -624,8 +644,15 @@ class OPENVSPSimpleGeometry(ExternalCodeComp):
         copy_resource_folder(openvsp3201, target_directory)
         # noinspection PyTypeChecker
         copy_resource(resources, self.options["htp_airfoil_file"], target_directory)
-        # Create corresponding .bat files (one for each geometry configuration)
-        self.options["command"] = [pth.join(target_directory, "vspscript.bat")]
+        if os.name == "nt":
+            # Create corresponding .bat files (one for each geometry configuration)
+            self.options["command"] = [pth.join(target_directory, "vspscript.bat")]
+        elif os.name == "posix":
+            # Create corresponding .sh files (one for each geometry configuration)
+            self.options["command"] = [pth.join(target_directory, "vspscript.sh")]
+        else:
+            _LOGGER.warning("OS not recognized, using Windows-format batch file")
+            self.options["command"] = [pth.join(target_directory, "vspscript.bat")]
         batch_file = open(self.options["command"][0], "w+")
         batch_file.write("@echo off\n")
         command = (
@@ -686,7 +713,15 @@ class OPENVSPSimpleGeometry(ExternalCodeComp):
         ]
         self.options["external_input_files"] = input_file_list
         self.options["external_output_files"] = output_file_list
-        self.options["command"] = [pth.join(target_directory, "vspaero.bat")]
+        if os.name == "nt":
+            # Create corresponding .bat files (one for each geometry configuration)
+            self.options["command"] = [pth.join(target_directory, "vspaero.bat")]
+        elif os.name == "posix":
+            # Create corresponding .sh files (one for each geometry configuration)
+            self.options["command"] = [pth.join(target_directory, "vspaero.sh")]
+        else:
+            _LOGGER.warning("OS not recognized, using Windows-format batch file")
+            self.options["command"] = [pth.join(target_directory, "vspaero.bat")]
         batch_file = open(self.options["command"][0], "w+")
         batch_file.write("@echo off\n")
         command = (
@@ -859,7 +894,15 @@ class OPENVSPSimpleGeometry(ExternalCodeComp):
         # noinspection PyTypeChecker
         copy_resource(resources, self.options["htp_airfoil_file"], target_directory)
         # Create corresponding .bat files (one for each geometry configuration)
-        self.options["command"] = [pth.join(target_directory, "vspscript.bat")]
+        if os.name == "nt":
+            # Create corresponding .bat files (one for each geometry configuration)
+            self.options["command"] = [pth.join(target_directory, "vspscript.bat")]
+        elif os.name == "posix":
+            # Create corresponding .sh files (one for each geometry configuration)
+            self.options["command"] = [pth.join(target_directory, "vspscript.sh")]
+        else:
+            _LOGGER.warning("OS not recognized, using Windows-format batch file")
+            self.options["command"] = [pth.join(target_directory, "vspscript.bat")]
         batch_file = open(self.options["command"][0], "w+")
         batch_file.write("@echo off\n")
         command = (
@@ -945,7 +988,15 @@ class OPENVSPSimpleGeometry(ExternalCodeComp):
         ]
         self.options["external_input_files"] = input_file_list
         self.options["external_output_files"] = output_file_list
-        self.options["command"] = [pth.join(target_directory, "vspaero.bat")]
+        if os.name == "nt":
+            # Create corresponding .bat files (one for each geometry configuration)
+            self.options["command"] = [pth.join(target_directory, "vspaero.bat")]
+        elif os.name == "posix":
+            # Create corresponding .sh files (one for each geometry configuration)
+            self.options["command"] = [pth.join(target_directory, "vspaero.sh")]
+        else:
+            _LOGGER.warning("OS not recognized, using Windows-format batch file")
+            self.options["command"] = [pth.join(target_directory, "vspaero.bat")]
         batch_file = open(self.options["command"][0], "w+")
         batch_file.write("@echo off\n")
         command = (
@@ -1365,8 +1416,15 @@ class OPENVSPSimpleGeometryDP(OPENVSPSimpleGeometry):
         copy_resource_folder(openvsp3201, target_directory)
         # noinspection PyTypeChecker
         copy_resource(resources, self.options["wing_airfoil_file"], target_directory)
-        # Create corresponding .bat files (one for each geometry configuration)
-        self.options["command"] = [pth.join(target_directory, "vspscript.bat")]
+        if os.name == "nt":
+            # Create corresponding .bat files (one for each geometry configuration)
+            self.options["command"] = [pth.join(target_directory, "vspscript.bat")]
+        elif os.name == "posix":
+            # Create corresponding .sh files (one for each geometry configuration)
+            self.options["command"] = [pth.join(target_directory, "vspscript.sh")]
+        else:
+            _LOGGER.warning("OS not recognized, using Windows-format batch file")
+            self.options["command"] = [pth.join(target_directory, "vspscript.bat")]
         batch_file = open(self.options["command"][0], "w+")
         batch_file.write("@echo off\n")
         command = (
@@ -1435,7 +1493,15 @@ class OPENVSPSimpleGeometryDP(OPENVSPSimpleGeometry):
         ]
         self.options["external_input_files"] = input_file_list
         self.options["external_output_files"] = output_file_list
-        self.options["command"] = [pth.join(target_directory, "vspaero.bat")]
+        if os.name == "nt":
+            # Create corresponding .bat files (one for each geometry configuration)
+            self.options["command"] = [pth.join(target_directory, "vspaero.bat")]
+        elif os.name == "posix":
+            # Create corresponding .sh files (one for each geometry configuration)
+            self.options["command"] = [pth.join(target_directory, "vspaero.sh")]
+        else:
+            _LOGGER.warning("OS not recognized, using Windows-format batch file")
+            self.options["command"] = [pth.join(target_directory, "vspaero.bat")]
         batch_file = open(self.options["command"][0], "w+")
         batch_file.write("@echo off\n")
         command = (

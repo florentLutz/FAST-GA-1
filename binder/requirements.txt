@@ -1,1 +1,1 @@
-fast-oad-cs23
+pip install git+https://github.com/florentLutz/FAST-GA-1.git

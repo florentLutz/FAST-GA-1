@@ -410,7 +410,6 @@ class OPENVSPSimpleGeometry(ExternalCodeComp):
             # Create corresponding .sh files (one for each geometry configuration)
             self.options["command"] = [pth.join(target_directory, "vspscript.sh")]
             batch_file = open(self.options["command"][0], "w+")
-            batch_file.write("#!/bin/bash\n")
             batch_file.write("echo off\n")
         else:
             _LOGGER.warning("OS not recognized, using Windows-format batch file")
@@ -491,7 +490,6 @@ class OPENVSPSimpleGeometry(ExternalCodeComp):
             # Create corresponding .sh files (one for each geometry configuration)
             self.options["command"] = [pth.join(target_directory, "vspaero.sh")]
             batch_file = open(self.options["command"][0], "w+")
-            batch_file.write("#!/bin/bash\n")
             batch_file.write("echo off\n")
         else:
             _LOGGER.warning("OS not recognized, using Windows-format batch file")
@@ -664,7 +662,6 @@ class OPENVSPSimpleGeometry(ExternalCodeComp):
             # Create corresponding .sh files (one for each geometry configuration)
             self.options["command"] = [pth.join(target_directory, "vspscript.sh")]
             batch_file = open(self.options["command"][0], "w+")
-            batch_file.write("#!/bin/bash\n")
             batch_file.write("echo off\n")
         else:
             _LOGGER.warning("OS not recognized, using Windows-format batch file")
@@ -740,7 +737,6 @@ class OPENVSPSimpleGeometry(ExternalCodeComp):
             # Create corresponding .sh files (one for each geometry configuration)
             self.options["command"] = [pth.join(target_directory, "vspaero.sh")]
             batch_file = open(self.options["command"][0], "w+")
-            batch_file.write("#!/bin/bash\n")
             batch_file.write("echo off\n")
         else:
             _LOGGER.warning("OS not recognized, using Windows-format batch file")
@@ -927,7 +923,6 @@ class OPENVSPSimpleGeometry(ExternalCodeComp):
             # Create corresponding .sh files (one for each geometry configuration)
             self.options["command"] = [pth.join(target_directory, "vspscript.sh")]
             batch_file = open(self.options["command"][0], "w+")
-            batch_file.write("#!/bin/bash\n")
             batch_file.write("echo off\n")
         else:
             _LOGGER.warning("OS not recognized, using Windows-format batch file")
@@ -1028,7 +1023,6 @@ class OPENVSPSimpleGeometry(ExternalCodeComp):
             # Create corresponding .sh files (one for each geometry configuration)
             self.options["command"] = [pth.join(target_directory, "vspaero.sh")]
             batch_file = open(self.options["command"][0], "w+")
-            batch_file.write("#!/bin/bash\n")
             batch_file.write("echo off\n")
         else:
             _LOGGER.warning("OS not recognized, using Windows-format batch file")

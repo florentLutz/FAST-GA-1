@@ -1,1 +1,1 @@
-pip install git+https://github.com/florentLutz/FAST-GA-1.git
+git+https://github.com/florentLutz/FAST-GA-1.git
